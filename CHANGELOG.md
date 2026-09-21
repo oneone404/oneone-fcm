@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.1
+
+- Add a one-tap action to restore the OneOne Lite whitelist and core FCM settings.
+
 ## v1.2.0
 
 - Add the Lite profile: retain FCM delivery, GMS, PowerKeeper and Greezer handling.

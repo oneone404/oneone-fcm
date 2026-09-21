@@ -113,6 +113,51 @@ format_fsi_packages_json() {
     fi
 }
 
+write_lite_defaults() {
+    # Restore any per-app call permissions previously granted by the full
+    # profile before replacing the configuration with the Lite profile.
+    read_fsi_packages
+    for _pkg in $FSI_PKGS; do
+        restore_fsi_appops "$STOCK_CONF" "$_pkg"
+    done
+
+    _lite_conf="$CONF_FILE.tmp.$$"
+    cat <<'EOF' > "$_lite_conf"
+# OneOne FCM Lite default wake allowlist.
+MODE=WHITELIST
+GROUP_ALERT_FIX=0
+ANTI_MUTE_UPDATE=0
+UNTHROTTLE_ALERT=0
+com.google.android.gm
+com.zing.zalo
+com.facebook.orca
+com.facebook.lite
+com.facebook.katana
+com.instagram.android
+org.telegram.messenger
+com.openai.chatgpt
+mobile.acb.com.vn
+com.mbmobile
+EOF
+    chmod 0644 "$_lite_conf" 2>/dev/null || return 1
+    chown system:system "$_lite_conf" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$_lite_conf" 2>/dev/null || true
+    mv -f "$_lite_conf" "$CONF_FILE" 2>/dev/null || return 1
+
+    _sync_conf="$CHANNEL_SYNC_CONF.tmp.$$"
+    printf '{"auto_sync_boot":false,"sync_sound":false,"sync_vibration":false,"sync_lockscreen":false,"sync_float":false}\n' > "$_sync_conf"
+    chmod 0644 "$_sync_conf" 2>/dev/null || return 1
+    chown system:system "$_sync_conf" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$_sync_conf" 2>/dev/null || true
+    mv -f "$_sync_conf" "$CHANNEL_SYNC_CONF" 2>/dev/null || return 1
+
+    printf 'true\n' > "$PK_BOOT_CONF" 2>/dev/null || return 1
+    chmod 0644 "$PK_BOOT_CONF" 2>/dev/null || true
+    chown system:system "$PK_BOOT_CONF" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$PK_BOOT_CONF" 2>/dev/null || true
+    disarm_powerkeeper_gms || return 1
+}
+
 # apply_fsi_appops / restore_fsi_appops live in common.sh so that the WebUI and
 # uninstall grant and give back exactly the same set of ops through the same
 # recorded state.
@@ -660,6 +705,15 @@ case "$ACTION" in
         write_alert_fix_config || true
 
         printf '{"status":"ok","group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}\n' "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+        ;;
+
+    apply_lite_defaults)
+        if write_lite_defaults; then
+            echo '{"status":"ok","message":"Lite defaults restored"}'
+        else
+            echo '{"status":"error","message":"Failed to restore Lite defaults"}'
+            exit 1
+        fi
         ;;
 
     set_prestart)

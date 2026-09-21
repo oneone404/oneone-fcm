@@ -1386,6 +1386,24 @@
         checkDraftChanges();
     }
 
+    async function applyLiteDefaults() {
+        if (!confirm(t('lite.confirm'))) return;
+        const button = document.getElementById('btnRestoreLiteDefaults');
+        if (button) button.disabled = true;
+        try {
+            const res = await execAction('apply_lite_defaults');
+            if (!res || !res.success || !res.data || res.data.status !== 'ok') {
+                throw new Error((res && res.data && res.data.message) || (res && res.stderr) || 'Restore failed');
+            }
+            await loadStatus();
+            showToast(t('lite.restored'));
+        } catch (e) {
+            showToast(t('lite.failed') + e.message);
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
     function setViewFilter(filter) {
         viewFilter = filter;
         document.querySelectorAll('.filter-tab').forEach(el => el.classList.remove('active', 'enabled', 'disabled', 'active-app', 'stopped-app'));
