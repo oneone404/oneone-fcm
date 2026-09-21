@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>OneOne FCM</title>
+    <script>
+        (function() {
+            try {
+                var params = new URLSearchParams(window.location.search);
+                var theme = params.get('theme');
+                var savedTheme = localStorage.getItem('fcm_ui_theme') || 'system';
+                if (theme === 'light' || theme === 'dark') {
+                    document.documentElement.setAttribute('data-theme', theme);
+                } else if (savedTheme === 'light' || savedTheme === 'dark') {
+                    document.documentElement.setAttribute('data-theme', savedTheme);
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                }
+                var saved = localStorage.getItem('fcm_ui_lang');
+                var nav = (navigator.language || navigator.userLanguage || '').toLowerCase().slice(0, 2);
+                var supported = ['vi'];
+                var lang = saved || (supported.indexOf(nav) !== -1 ? nav : 'en');
+                if (lang && lang !== 'en') {
+                    document.documentElement.classList.add('i18n-pending');
+                    document.documentElement.lang = lang;
+                    setTimeout(function() {
+                        document.documentElement.classList.remove('i18n-pending');
+                    }, 300);
+                }
+            } catch (e) {}
+        })();
+    </script>
+    <style>
+        html.i18n-pending body {
+            opacity: 0 !important;
+        }
+    </style>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="toast" id="toast">Saved Successfully ✓</div>
+
+<!-- Import / Export Modal -->
+<div class="modal-overlay" id="ioModal" onclick="closeModal(event)">
+    <div class="modal-box" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <div class="modal-title" id="modalTitle" data-i18n="modal.title.io">Preset Import / Export</div>
+            <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <p class="modal-hint" id="modalHelp">
+            <span data-i18n="modal.help.import">Tap inside to paste or type package names (separated by newlines or commas):</span>
+        </p>
+        <textarea class="modal-textarea" id="modalTextarea" placeholder="com.whatsapp&#10;org.telegram.messenger&#10;com.bKash.customerapp" autofocus></textarea>
+        <div class="modal-actions">
+            <button class="btn" id="modalClearBtn" onclick="clearModalText()" data-i18n="modal.clear">Clear Box</button>
+            <button class="btn btn-preset" id="modalApplyBtn" onclick="applyImport()" data-i18n="modal.apply">Apply to List</button>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+    <!-- Tab 1: Home / Trang chủ -->
+    <div class="tab-pane active" id="paneHome">
+        <!-- ROM / Patch State Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                    </svg>
+                    <span data-i18n="rom.title">Framework Patch</span>
+                </div>
+                <span id="romBadge" class="status-pill status-running"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
+            </div>
+
+            <div class="rom-grid">
+                <div class="rom-row"><span data-i18n="rom.current">Current firmware</span><code id="romCurrent"><span class="skeleton skeleton-text" style="width: 110px;"></span></code></div>
+                <div class="rom-row"><span data-i18n="rom.patched">Patched for</span><code id="romStored"><span class="skeleton skeleton-text" style="width: 130px;"></span></code></div>
+                <div class="rom-row"><span data-i18n="rom.live">Live framework</span><code id="romLive"><span class="skeleton skeleton-text" style="width: 85px;"></span></code></div>
+            </div>
+
+            <div class="mode-desc" id="romHint"><span class="skeleton skeleton-text" style="width: 65%; height: 11px;"></span></div>
+
+            <div class="action-row" style="margin-top: 10px;">
+                <button class="btn btn-accent" id="btnRepatch" onclick="runRepatch()" data-i18n="rom.repatch">Re-patch now</button>
+                <button class="btn" onclick="refreshRomStatus()" data-i18n="rom.refresh">Refresh</button>
+            </div>
+        </div>
+
+        <!-- Mode Selector Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                    </svg>
+                    <span data-i18n="mode.title">Wake Mode</span>
+                </div>
+                <span id="modeBadge" class="status-pill status-running"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
+            </div>
+
+            <div class="mode-segmented">
+                <button class="mode-btn" id="btnModeAll" onclick="setMode('ALL')" data-i18n="mode.all">Allow All</button>
+                <button class="mode-btn" id="btnModeWhitelist" onclick="setMode('WHITELIST')" data-i18n="mode.whitelist">Whitelist</button>
+                <button class="mode-btn" id="btnModeBlacklist" onclick="setMode('BLACKLIST')" data-i18n="mode.blacklist">Blacklist</button>
+            </div>
+
+            <div class="mode-desc" id="modeDescription">
+                <span class="skeleton skeleton-text" style="width: 75%; height: 11px;"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 2: Apps / Ứng dụng -->
+    <div class="tab-pane" id="paneApps">
+        <!-- App Filter Manager Card -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span id="listTitle" data-i18n="list.title.all">Package Filter List</span>
+            </div>
+            <span id="selectedCount" class="status-pill status-stopped"><span class="skeleton skeleton-text" style="width: 52px; height: 10px;"></span></span>
+        </div>
+
+        <!-- Clean Essential Action Bar -->
+        <div class="action-row">
+            <button class="btn btn-recommend" onclick="selectRecommended()" data-i18n="act.recommended">⭐ Recommended</button>
+            <button class="btn btn-accent" onclick="openImportModal()" data-i18n="act.import">📥 Import</button>
+            <button class="btn btn-accent" onclick="exportToClipboard()" data-i18n="act.export">📋 Export</button>
+            <button class="btn" onclick="selectAll(true)" data-i18n="act.selectAll">Select All</button>
+            <button class="btn" onclick="selectAll(false)" data-i18n="act.clear">Clear</button>
+        </div>
+
+        <!-- View Filter Tabs: All / Enabled / Disabled / Active / Stopped -->
+        <div class="filter-tabs">
+            <button class="filter-tab active" id="tabFilterAll" onclick="setViewFilter('ALL')"><span data-i18n="tab.all">All</span> (<span id="countAll">&minus;</span>)</button>
+            <button class="filter-tab" id="tabFilterEnabled" onclick="setViewFilter('ENABLED')"><span data-i18n="tab.enabled">Enabled</span> (<span id="countEnabled">&minus;</span>)</button>
+            <button class="filter-tab" id="tabFilterDisabled" onclick="setViewFilter('DISABLED')"><span data-i18n="tab.disabled">Disabled</span> (<span id="countDisabled">&minus;</span>)</button>
+            <button class="filter-tab" id="tabFilterActive" onclick="setViewFilter('ACTIVE')"><span data-i18n="tab.active">Active</span> (<span id="countActive"><span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span></span>)</button>
+            <button class="filter-tab" id="tabFilterStopped" onclick="setViewFilter('STOPPED')"><span data-i18n="tab.stopped">Stopped</span> (<span id="countStopped"><span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span></span>)</button>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="search-box">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" id="searchInput" placeholder="Search package name..." data-i18n-ph="search.placeholder" oninput="onSearchInput()">
+        </div>
+
+        <!-- Dynamic App List -->
+        <div class="app-list" id="appList" onscroll="handleListScroll()">
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 62%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 42%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 42px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 78%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 50%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 46px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 55%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 35%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 40px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 84%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 48%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 44px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 68%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 38%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 42px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+            <div class="skeleton-app-item">
+                <div class="skeleton skeleton-icon"></div>
+                <div class="skeleton-app-info">
+                    <span class="skeleton skeleton-text" style="width: 50%; height: 13px;"></span>
+                    <span class="skeleton skeleton-text" style="width: 30%; height: 9px;"></span>
+                </div>
+                <div class="skeleton-app-actions">
+                    <span class="skeleton skeleton-pill" style="width: 40px; height: 16px;"></span>
+                    <span class="skeleton skeleton-switch"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Tab 3: Features / Tính năng -->
+    <div class="tab-pane" id="paneFeatures">
+        <!-- Notification Sound Anti-Mute Card -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                </svg>
+                <span data-i18n="sound.title">Sound Anti-Mute</span>
+            </div>
+            <span id="soundBadge" class="status-pill status-stopped" data-i18n="sound.badge.stock">STOCK DEFAULT</span>
+        </div>
+
+        <div class="mode-desc" data-i18n="sound.desc" style="margin-bottom: 8px;">
+            Prevent HyperOS from auto-silencing or throttling notification sound alerts.
+        </div>
+
+        <div class="sound-list" id="soundList">
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sound.feat.miui_cooldown">MIUI 10s Burst Mute</div>
+                    <div class="sound-hint" data-i18n="sound.feat.miui_cooldown.hint">Disables 10s muting for successive notification bursts</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchMiuiCooldown" onchange="toggleSoundFeature('miui_cooldown', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sound.feat.android15_cooldown">Android 15 Cooldown</div>
+                    <div class="sound-hint" data-i18n="sound.feat.android15_cooldown.hint">Disables politeness and avalanche volume reduction</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchA15Cooldown" onchange="toggleSoundFeature('android15_cooldown', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sound.feat.offbody">Off-Body Sensor Mute</div>
+                    <div class="sound-hint" data-i18n="sound.feat.offbody.hint">Prevents muting when phone is on table or in pocket</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchOffbody" onchange="toggleSoundFeature('offbody_mute', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" id="labelGroupAlertFix" data-i18n="sound.feat.group_alert">Grouped Notification Alerts</div>
+                    <div class="sound-hint" data-i18n="sound.feat.group_alert.hint">Bypasses AOSP group muting so email/thread notifications always sound & vibrate</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchGroupAlertFix" aria-labelledby="labelGroupAlertFix" onchange="toggleAlertFix('group_alert_fix', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" id="labelAntiMuteUpdate" data-i18n="sound.feat.anti_mute_update">Anti-Mute on App Update</div>
+                    <div class="sound-hint" data-i18n="sound.feat.anti_mute_update.hint">Prevents apps from canceling alerts on rapid background updates</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchAntiMuteUpdate" aria-labelledby="labelAntiMuteUpdate" onchange="toggleAlertFix('anti_mute_update', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" id="labelUnthrottleAlert" data-i18n="sound.feat.unthrottle_alert">Unthrottle Audio Alert Rate Limit</div>
+                    <div class="sound-hint" data-i18n="sound.feat.unthrottle_alert.hint">Prevents Android from muting consecutive notification chimes ("Muting recently noisy") when multiple messages arrive in rapid succession</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchUnthrottleAlert" aria-labelledby="labelUnthrottleAlert" onchange="toggleAlertFix('unthrottle_alert', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="action-row" style="margin-top: 10px;">
+            <button class="btn btn-recommend" id="btnApplySound" onclick="applySoundFix()" data-i18n="sound.btn.apply">⚡ Eliminate Sound Silencing</button>
+            <button class="btn" id="btnRestoreSound" onclick="restoreSoundFix()" data-i18n="sound.btn.restore" style="display: none;">↺ Restore Defaults</button>
+        </div>
+    </div>
+
+    <!-- Channel Permission Sync Card -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span data-i18n="sync.title">Channel Permission Sync</span>
+            </div>
+            <span id="syncBadge" class="status-pill status-running" data-i18n="sync.badge.auto">AUTO-SYNC ON</span>
+        </div>
+
+        <div class="mode-desc" data-i18n="sync.desc" style="margin-bottom: 8px;">
+            Auto-grant notification permissions to target apps according to your active FCM Wake Mode.
+        </div>
+
+        <div class="sound-list" id="channelSyncList">
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sync.feat.boot">Auto-Sync on Boot</div>
+                    <div class="sound-hint" data-i18n="sync.feat.boot.hint">Automatically grant permissions on startup</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchSyncBoot" onchange="updateChannelSyncConfig('auto_sync_boot', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sync.feat.sound">Sound Alerts</div>
+                    <div class="sound-hint" data-i18n="sync.feat.sound.hint">Allow audible ringtone for target channels</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchSyncSound" onchange="updateChannelSyncConfig('sync_sound', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sync.feat.vibration">Vibration</div>
+                    <div class="sound-hint" data-i18n="sync.feat.vibration.hint">Allow haptic vibration for target channels</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchSyncVib" onchange="updateChannelSyncConfig('sync_vibration', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sync.feat.lockscreen">Lockscreen Display</div>
+                    <div class="sound-hint" data-i18n="sync.feat.lockscreen.hint">Show notifications & wake screen on keyguard</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchSyncLock" onchange="updateChannelSyncConfig('sync_lockscreen', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="sync.feat.float">Floating Banners (Heads-Up)</div>
+                    <div class="sound-hint" data-i18n="sync.feat.float.hint">Display pop-up banners over running apps</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="switchSyncFloat" onchange="updateChannelSyncConfig('sync_float', this.checked)">
+                    <span class="slider green"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="action-row" style="margin-top: 10px;">
+            <button class="btn btn-recommend" id="btnRunSync" onclick="triggerChannelSync()" data-i18n="sync.btn.run">⚡ Sync Channels Now</button>
+        </div>
+    </div>
+
+    <!-- GMS Global Parity Card -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                <span data-i18n="parity.title">GMS Global Parity</span>
+            </div>
+            <span id="parityBadge" class="status-pill status-stopped"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
+        </div>
+
+        <div class="mode-desc" data-i18n="parity.desc" style="margin-bottom: 8px;">
+            Enforces Global ROM network and notification behavior on China ROM.
+        </div>
+
+        <div class="sound-list">
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="parity.feat.pk">PowerKeeper GMS Firewall</div>
+                    <div class="sound-hint" data-i18n="parity.feat.pk.hint">Disarms Netd iptables CHAIN_GMS_WALL & DNS blocker</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                    <span class="status-pill status-running" id="badgePkGms"><span class="skeleton skeleton-text" style="width: 44px; height: 11px;"></span></span>
+                    <div class="spinner-small" id="spinPkGms" style="display: none;"></div>
+                    <label class="switch" id="lblSwitchPkGms" style="opacity: 0.35; pointer-events: none;" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="switchPkGms" disabled onchange="onTogglePkGmsSwitch(this.checked)">
+                        <span class="slider green"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="sound-row" id="rowPkGmsBoot">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="parity.feat.boot">Apply on Boot</div>
+                    <div class="sound-hint" data-i18n="parity.feat.boot.hint">Automatically disarm PowerKeeper firewall on device startup</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                    <div class="spinner-small" id="spinPkGmsBoot" style="display: none;"></div>
+                    <label class="switch" id="lblSwitchPkGmsBoot" style="opacity: 0.35; pointer-events: none;" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="switchPkGmsBoot" disabled onchange="onTogglePkGmsBoot(this.checked)">
+                        <span class="slider green"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="sound-row">
+                <div class="sound-info">
+                    <div class="sound-name" data-i18n="parity.feat.fsi">VoIP FullScreen Intent</div>
+                    <div class="sound-hint" data-i18n="parity.feat.fsi.hint">Preserves incoming call answer/decline screens when locked</div>
+                </div>
+                <span class="status-pill status-running" id="badgeVoipFsi"><span class="skeleton skeleton-text" style="width: 52px; height: 11px;"></span></span>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Tab 4: Settings / Cài đặt -->
+    <div class="tab-pane" id="paneSettings">
+        <!-- Appearance & Language Section -->
+        <div class="section-label" data-i18n="settings.section.appearance">Appearance &amp; Language</div>
+        <div class="card settings-group">
+            <!-- Language Row -->
+            <div class="settings-row">
+                <div class="settings-row-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="2" y1="12" x2="22" y2="12"/>
+                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    </svg>
+                </div>
+                <div class="settings-row-info">
+                    <div class="settings-row-title" data-i18n="settings.language">Language</div>
+                    <div class="settings-row-sub" id="langSubLabel">Tiếng Việt</div>
+                </div>
+                <div class="settings-row-action">
+                    <select class="settings-select" id="langSelect" aria-label="Language" onchange="setLang(this.value)">
+                        <option value="vi">Tiếng Việt</option>
+                        <option value="en">English</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Theme Row -->
+            <div class="settings-row">
+                <div class="settings-row-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                </div>
+                <div class="settings-row-info">
+                    <div class="settings-row-title" data-i18n="settings.theme">Theme</div>
+                    <div class="settings-row-sub" id="themeSubLabel" data-i18n="theme.system">Follow system</div>
+                </div>
+                <div class="settings-row-action">
+                    <select class="settings-select" id="themeSelect" aria-label="Theme" onchange="setTheme(this.value)">
+                        <option value="system" data-i18n="theme.system">Follow system</option>
+                        <option value="dark" data-i18n="theme.dark">Dark</option>
+                        <option value="light" data-i18n="theme.light">Light</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- System & Diagnostics Section -->
+        <div class="section-label" data-i18n="settings.section.system">System &amp; Diagnostics</div>
+        <div class="card event-card">
+        <div class="card-header">
+            <div class="card-title">
+                <span class="material-symbol">≋</span>
+                <span data-i18n="log.title">FCM event log</span>
+            </div>
+            <span class="status-pill status-running" id="logBadge">LIVE</span>
+        </div>
+        <div class="mode-desc" data-i18n="log.desc">Shows package, delivery stage and decision. Notification content is never recorded.</div>
+        <pre id="eventLog" class="event-log" data-i18n="log.empty">No FCM event recorded yet.</pre>
+        <div class="action-row">
+            <button class="btn btn-accent" onclick="refreshEventLog()" data-i18n="log.refresh">Refresh</button>
+            <button class="btn" onclick="clearEventLog()" data-i18n="log.clear">Clear</button>
+        </div>
+        </div>
+
+        <!-- About Section -->
+        <div class="section-label" data-i18n="settings.section.about">About</div>
+        <div class="card settings-group">
+            <div class="settings-row">
+                <div class="settings-row-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                <div class="settings-row-info">
+                    <div class="settings-row-title">OneOne FCM - Pandora</div>
+                    <div class="settings-row-sub">Version v1.1.0 &bull; Author: OneOne</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Floating Save Bar -->
+<div class="save-bar" id="saveBar">
+    <div>
+        <div style="font-size: 0.78rem; font-weight: 600;" id="saveBarStatus" data-i18n="save.ready">Changes Ready</div>
+        <div style="font-size: 0.65rem; color: var(--text-muted);" data-i18n="save.hint">Syncs live without reboot</div>
+    </div>
+    <button class="save-btn" onclick="saveConfiguration()" data-i18n="save.button">Save Changes</button>
+</div>
+
+<!-- ReSukiSU Native Material 3 Bottom Navigation Bar -->
+<nav class="bottom-nav">
+    <button class="nav-item active" id="navBtnHome" onclick="switchTab('home')" type="button">
+        <div class="nav-icon-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+        </div>
+        <span class="nav-label" data-i18n="nav.home">Home</span>
+    </button>
+    <button class="nav-item" id="navBtnApps" onclick="switchTab('apps')" type="button">
+        <div class="nav-icon-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1"/>
+                <rect x="14" y="3" width="7" height="7" rx="1"/>
+                <rect x="14" y="14" width="7" height="7" rx="1"/>
+                <rect x="3" y="14" width="7" height="7" rx="1"/>
+            </svg>
+        </div>
+        <span class="nav-label" data-i18n="nav.apps">Apps</span>
+    </button>
+    <button class="nav-item" id="navBtnFeatures" onclick="switchTab('features')" type="button">
+        <div class="nav-icon-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+        </div>
+        <span class="nav-label" data-i18n="nav.features">Features</span>
+    </button>
+    <button class="nav-item" id="navBtnSettings" onclick="switchTab('settings')" type="button">
+        <div class="nav-icon-pill">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.4 7.4 0 0 0-1.69-.98L14.5 2.42A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42l-.38 2.65a7.4 7.4 0 0 0-1.69.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.05.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.22.37.31.6.22l2.49-1c.51.4 1.08.73 1.69.98l.38 2.65A.5.5 0 0 0 10 22h4a.5.5 0 0 0 .5-.42l.38-2.65a7.4 7.4 0 0 0 1.69-.98l2.49 1c.23.09.48 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" clip-rule="evenodd"/>
+            </svg>
+        </div>
+        <span class="nav-label" data-i18n="nav.settings">Settings</span>
+    </button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>

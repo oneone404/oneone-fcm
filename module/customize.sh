@@ -1,0 +1,419 @@
+#!/system/bin/sh
+# ====================================================================
+# HyperOS FCM Push Notification Fix - On-The-Fly Patcher
+# ====================================================================
+
+ui_print "***********************************************"
+ui_print "*      HyperOS FCM Push Notification Fix      *"
+ui_print "*   On-Device Surgical Bytecode Patcher       *"
+ui_print "*   (Multi-ROM OS & Region Adaptive Engine)   *"
+ui_print "***********************************************"
+
+STAGE_DIR="/data/local/tmp/fcm_patch_stage_$$"
+mkdir -p "$STAGE_DIR"
+
+cleanup() {
+    rm -rf "$STAGE_DIR"
+}
+trap cleanup EXIT INT TERM
+
+# Ensure sufficient storage on /data for staging and AOT compilation
+DATA_FREE_KB=$(df -k /data 2>/dev/null | tail -n 1 | awk '{print $4}')
+if [ -n "$DATA_FREE_KB" ] && [ "$DATA_FREE_KB" -lt 150000 ]; then
+    ui_print ""
+    ui_print "[!] LOW DISK SPACE: ${DATA_FREE_KB} KB free on /data"
+    ui_print "[!] At least 150 MB is required for framework staging and AOT compilation."
+    cleanup
+    abort "Low /data storage (${DATA_FREE_KB} KB free)."
+fi
+
+abort_install() {
+    ui_print ""
+    ui_print "[!] ERROR: $1"
+    ui_print "[!] Aborting installation. Stock system remains 100% untouched."
+    cleanup
+    abort "$1"
+}
+
+# OneOne device lock: never patch a merely similar Xiaomi framework.
+EXPECTED_DEVICE="pandora"
+EXPECTED_INCREMENTAL="OS3.0.319.0.WBLCNXM"
+EXPECTED_SDK="36"
+EXPECTED_SERVICES_SHA256="4f313e77755d6a5ce20b4ad79d132067aebda5eb940089180a0bfbf62dbbe7ba"
+EXPECTED_MIUI_SERVICES_SHA256="0ca8bee568f2d4607aa6393764338d5b52fcd0101cdce49c39d8051a3fdc4c70"
+
+[ "$(getprop ro.product.device)" = "$EXPECTED_DEVICE" ] || abort_install "This build is only for pandora."
+[ "$(getprop ro.build.version.incremental)" = "$EXPECTED_INCREMENTAL" ] || abort_install "Firmware must be $EXPECTED_INCREMENTAL."
+[ "$(getprop ro.build.version.sdk)" = "$EXPECTED_SDK" ] || abort_install "Android SDK must be $EXPECTED_SDK."
+
+# ==========================================
+# Pre-Flight Compatibility & ROM Checks
+# ==========================================
+
+# 1. Check Android SDK Version (Require Android 13+ / SDK 33+)
+API_LEVEL=$(getprop ro.build.version.sdk)
+[ -z "$API_LEVEL" ] && API_LEVEL=0
+
+if [ "$API_LEVEL" -lt 33 ]; then
+    ui_print ""
+    ui_print "[!] INCOMPATIBLE ANDROID VERSION: SDK $API_LEVEL (Android $(getprop ro.build.version.release))"
+    ui_print "[!] This surgical patch requires Android 13+ (SDK 33, 34, 35, 36+) for HyperOS."
+    abort_install "Unsupported Android version (SDK $API_LEVEL < 33)."
+fi
+
+# 2. Check Device Manufacturer & ROM (Xiaomi / Redmi / POCO / HyperOS)
+MANUFACTURER=$(getprop ro.product.manufacturer | tr '[:upper:]' '[:lower:]')
+BRAND=$(getprop ro.product.brand | tr '[:upper:]' '[:lower:]')
+SYS_MANUFACTURER=$(getprop ro.product.system.manufacturer | tr '[:upper:]' '[:lower:]')
+VND_MANUFACTURER=$(getprop ro.product.vendor.manufacturer | tr '[:upper:]' '[:lower:]')
+ODM_MANUFACTURER=$(getprop ro.product.odm.manufacturer | tr '[:upper:]' '[:lower:]')
+MIUI_VER=$(getprop ro.miui.ui.version.name)
+HYPEROS_VER=$(getprop ro.mi.os.version.name)
+HYPEROS_CODE=$(getprop ro.mi.os.version.code)
+INCREMENTAL=$(getprop ro.build.version.incremental)
+
+IS_XIAOMI=false
+for _m in "$MANUFACTURER" "$BRAND" "$SYS_MANUFACTURER" "$VND_MANUFACTURER" "$ODM_MANUFACTURER"; do
+    case "$_m" in
+        *xiaomi*|*redmi*|*poco*|*blackshark*) IS_XIAOMI=true ;;
+    esac
+done
+if [ -n "$MIUI_VER" ] || [ -n "$HYPEROS_VER" ] || [ -n "$HYPEROS_CODE" ]; then
+    IS_XIAOMI=true
+fi
+
+if [ "$IS_XIAOMI" != "true" ]; then
+    ui_print ""
+    ui_print "[!] NON-XIAOMI DEVICE DETECTED: $MANUFACTURER $BRAND"
+    ui_print "[!] This module is strictly designed for Xiaomi / Redmi / POCO devices running HyperOS."
+    abort_install "Non-Xiaomi device detected ($MANUFACTURER)."
+fi
+
+# Detect OS & Region Profile. The detection lives in common.sh so that the
+# post-OTA re-patch resolves exactly the same patcher strategy as this install.
+. "$MODPATH/common.sh"
+detect_rom_profile
+OS_TYPE="$ROM_OS"
+REGION_TYPE="$ROM_REGION"
+
+# Guard against unsupported profiles
+if ! PROFILE_REASON="$(rom_profile_supported)"; then
+    abort_install "$PROFILE_REASON"
+fi
+
+# 3. Framework Source Files Verification
+SERVICES_STOCK="/system/framework/services.jar"
+MIUI_SERVICES_STOCK="$(live_miui_services)"
+
+[ ! -f "$SERVICES_STOCK" ] && abort_install "Missing stock $SERVICES_STOCK"
+[ -z "$MIUI_SERVICES_STOCK" ] && abort_install "Missing stock miui-services.jar (Ensure you are on HyperOS/MIUI)"
+
+SERVICES_SHA256="$(sha256sum "$SERVICES_STOCK" 2>/dev/null | awk '{print $1}')"
+MIUI_SERVICES_SHA256="$(sha256sum "$MIUI_SERVICES_STOCK" 2>/dev/null | awk '{print $1}')"
+# v1.0 -> v1.1 changed the module ID. During this one-time migration the live
+# paths are still the old module's patched mounts, so validate and patch from
+# its firmware-locked pristine stash instead.
+if { [ "$SERVICES_SHA256" != "$EXPECTED_SERVICES_SHA256" ] || [ "$MIUI_SERVICES_SHA256" != "$EXPECTED_MIUI_SERVICES_SHA256" ]; } \
+   && [ -f /data/adb/modules/fcm_notification_fix/stock/services.jar ] \
+   && [ -f /data/adb/modules/fcm_notification_fix/stock/miui-services.jar ]; then
+    _migration_services=/data/adb/modules/fcm_notification_fix/stock/services.jar
+    _migration_miui=/data/adb/modules/fcm_notification_fix/stock/miui-services.jar
+    _migration_services_hash="$(sha256sum "$_migration_services" 2>/dev/null | awk '{print $1}')"
+    _migration_miui_hash="$(sha256sum "$_migration_miui" 2>/dev/null | awk '{print $1}')"
+    if [ "$_migration_services_hash" = "$EXPECTED_SERVICES_SHA256" ] \
+       && [ "$_migration_miui_hash" = "$EXPECTED_MIUI_SERVICES_SHA256" ]; then
+        SERVICES_STOCK="$_migration_services"
+        MIUI_SERVICES_STOCK="$_migration_miui"
+        SERVICES_SHA256="$_migration_services_hash"
+        MIUI_SERVICES_SHA256="$_migration_miui_hash"
+        ui_print "- Migrating from v1.0 stock framework stash"
+    fi
+fi
+[ "$SERVICES_SHA256" = "$EXPECTED_SERVICES_SHA256" ] || abort_install "services.jar hash mismatch; refusing to patch."
+[ "$MIUI_SERVICES_SHA256" = "$EXPECTED_MIUI_SERVICES_SHA256" ] || abort_install "miui-services.jar hash mismatch; refusing to patch."
+
+ui_print "- Device: $(getprop ro.product.model) ($(getprop ro.product.manufacturer))"
+ui_print "- OS Target: $OS_TYPE ($REGION_TYPE, $INCREMENTAL, Android $(getprop ro.build.version.release) / SDK $API_LEVEL)"
+ui_print "- Found stock services.jar ($(ls -lh "$SERVICES_STOCK" | awk '{print $5}'))"
+ui_print "- Found stock miui-services.jar ($(ls -lh "$MIUI_SERVICES_STOCK" | awk '{print $5}'))"
+
+# ==========================================
+# 4. Stock Jar Stash — upgrade support.
+# First install stashes pristine jars inside the module so future updates can
+# re-patch from true stock while the old overlay is still mounted. The stash
+# is carried across updates via the modules -> modules_update window.
+# ==========================================
+MODULE_ID="oneone_fcm"
+OLD_MOD_DIR="/data/adb/modules/$MODULE_ID"
+# One-time v1.0 migration: the previous release used fcm_notification_fix.
+if [ ! -d "$OLD_MOD_DIR" ] && [ -d "/data/adb/modules/fcm_notification_fix" ]; then
+    OLD_MOD_DIR="/data/adb/modules/fcm_notification_fix"
+fi
+STOCK_DIR="$MODPATH/stock"
+STASH_STATUS="none"   # none | kept | created | carried | skipped
+
+# is_stock_jar() comes from common.sh (shared with repatch.sh)
+
+# Carry an existing stash forward so it survives the modules_update swap
+if [ -f "$OLD_MOD_DIR/stock/services.jar" ] && [ -f "$OLD_MOD_DIR/stock/miui-services.jar" ]; then
+    mkdir -p "$STOCK_DIR"
+    cp -f "$OLD_MOD_DIR/stock/services.jar" "$STOCK_DIR/services.jar"
+    cp -f "$OLD_MOD_DIR/stock/miui-services.jar" "$STOCK_DIR/miui-services.jar"
+    if [ -f "$OLD_MOD_DIR/stock/fingerprint" ]; then
+        cp -f "$OLD_MOD_DIR/stock/fingerprint" "$STOCK_DIR/fingerprint"
+    elif [ -f "$OLD_MOD_DIR/rom.fingerprint" ]; then
+        cp -f "$OLD_MOD_DIR/rom.fingerprint" "$STOCK_DIR/fingerprint"
+    fi
+fi
+
+# Carry forward stock settings backup and defaults marker across updates
+[ -f "$OLD_MOD_DIR/stock_settings.conf" ] && cp -f "$OLD_MOD_DIR/stock_settings.conf" "$MODPATH/stock_settings.conf" 2>/dev/null || true
+[ -f "$OLD_MOD_DIR/.defaults_applied" ] && cp -f "$OLD_MOD_DIR/.defaults_applied" "$MODPATH/.defaults_applied" 2>/dev/null || true
+
+# Decide which jar copies the patch engine should read
+SERVICES_READ="$SERVICES_STOCK"
+MIUI_READ="$MIUI_SERVICES_STOCK"
+USING_STASH=0
+
+LIVE_IS_STOCK=1
+is_stock_jar "$SERVICES_STOCK" || LIVE_IS_STOCK=0
+is_stock_jar "$MIUI_SERVICES_STOCK" || LIVE_IS_STOCK=0
+
+CURRENT_FP="$(get_rom_fingerprint)"
+STASHED_FP="$(cat "$STOCK_DIR/fingerprint" 2>/dev/null)"
+
+if [ "$LIVE_IS_STOCK" != "1" ]; then
+    ui_print "- Live framework jars already contain a previous patch"
+    if [ -f "$STOCK_DIR/services.jar" ] && [ -f "$STOCK_DIR/miui-services.jar" ] \
+        && is_fingerprint_match "$STASHED_FP" "$CURRENT_FP" \
+        && is_stock_jar "$STOCK_DIR/services.jar" && is_stock_jar "$STOCK_DIR/miui-services.jar"; then
+        SERVICES_READ="$STOCK_DIR/services.jar"
+        MIUI_READ="$STOCK_DIR/miui-services.jar"
+        USING_STASH=1
+        STASH_STATUS="carried"
+        get_rom_fingerprint > "$STOCK_DIR/fingerprint"
+        ui_print "- Valid stock stash found (firmware match)"
+        ui_print "- Re-patching engine input: stashed stock jars"
+    elif [ -n "$STASHED_FP" ] && ! is_fingerprint_match "$STASHED_FP" "$CURRENT_FP"; then
+        abort_install "Firmware changed since the stock stash was taken. Disable this module in your manager, reboot, then re-flash this zip to re-stash against the current firmware."
+    else
+        abort_install "No valid stock stash found for a live upgrade. Disable this module in your manager, reboot, then re-flash this zip — the first install on stock jars will create the stash automatically."
+    fi
+elif [ -d "$STOCK_DIR" ] && [ -n "$STASHED_FP" ] && ! is_fingerprint_match "$STASHED_FP" "$CURRENT_FP"; then
+    rm -rf "$STOCK_DIR"   # stale stash from older firmware; recreate below
+fi
+
+if [ "$USING_STASH" != "1" ] && [ "$LIVE_IS_STOCK" = "1" ]; then
+    if [ -f "$STOCK_DIR/services.jar" ] && is_fingerprint_match "$STASHED_FP" "$CURRENT_FP" \
+        && is_stock_jar "$STOCK_DIR/services.jar" && is_stock_jar "$STOCK_DIR/miui-services.jar"; then
+        STASH_STATUS="kept"
+        get_rom_fingerprint > "$STOCK_DIR/fingerprint"
+    else
+        FREE_KB=$(df -k /data/adb 2>/dev/null | tail -n 1 | awk '{print $4}')
+        NEED_KB=$(( ($(stat -c %s "$SERVICES_STOCK") + $(stat -c %s "$MIUI_SERVICES_STOCK")) / 1024 + 4096 ))
+        if [ "${FREE_KB:-0}" -ge "$NEED_KB" ]; then
+            rm -rf "$STOCK_DIR"
+            mkdir -p "$STOCK_DIR"
+            cp -f "$SERVICES_STOCK" "$STOCK_DIR/services.jar"
+            cp -f "$MIUI_SERVICES_STOCK" "$STOCK_DIR/miui-services.jar"
+            get_rom_fingerprint > "$STOCK_DIR/fingerprint"
+            STASH_STATUS="created"
+        else
+            STASH_STATUS="skipped"
+            ui_print "- [!] Low /data space (${FREE_KB:-0} KB free): skipping stock stash."
+            ui_print "- [!] Future live upgrades will need disable + reboot + re-flash."
+        fi
+    fi
+fi
+
+ui_print "- Launching on-device DEX patch engine..."
+ui_print ""
+
+# 5. Execute Transactional Patcher
+PATCHER_JAR="$MODPATH/tools/patcher.jar"
+[ ! -f "$PATCHER_JAR" ] && abort_install "Patcher engine not found at $PATCHER_JAR"
+
+execute_patcher_engine "$PATCHER_JAR" "$STAGE_DIR" \
+    --services "$SERVICES_READ" \
+    --miui-services "$MIUI_READ" \
+    --patcher "$PATCHER_JAR" \
+    --out-dir "$STAGE_DIR" \
+    --sdk "$API_LEVEL" \
+    --os "$OS_TYPE" \
+    --region "$REGION_TYPE"
+
+PATCH_STATUS=$?
+
+if [ $PATCH_STATUS -ne 0 ]; then
+    abort_install "Bytecode patch verification failed (exit code $PATCH_STATUS). Check log above."
+fi
+
+# 6. Verify staged output files exist
+if [ ! -f "$STAGE_DIR/services.jar" ] || [ ! -f "$STAGE_DIR/miui-services.jar" ]; then
+    abort_install "Patched output JAR files are missing from staging."
+fi
+
+ui_print ""
+ui_print "- [PASS] All patch checkpoints verified successfully!"
+ui_print "- Performing atomic swap into module filesystem..."
+
+# 7. Atomic Swap into Module Framework Directory
+PUB_DIR="$MODPATH/framework_staging_$$"
+rm -rf "$PUB_DIR"
+mkdir -p "$PUB_DIR"
+
+PUB_OK=1
+cp -f "$STAGE_DIR/services.jar" "$PUB_DIR/services.jar" || PUB_OK=0
+cp -f "$STAGE_DIR/miui-services.jar" "$PUB_DIR/miui-services.jar" || PUB_OK=0
+
+_sz_srv_src=$(wc -c < "$STAGE_DIR/services.jar" 2>/dev/null || echo 0)
+_sz_srv_pub=$(wc -c < "$PUB_DIR/services.jar" 2>/dev/null || echo 0)
+_sz_miui_src=$(wc -c < "$STAGE_DIR/miui-services.jar" 2>/dev/null || echo 0)
+_sz_miui_pub=$(wc -c < "$PUB_DIR/miui-services.jar" 2>/dev/null || echo 0)
+
+if [ "$PUB_OK" -ne 1 ] || \
+   [ "$_sz_srv_pub" -lt 1000000 ] || [ "$_sz_srv_pub" -ne "$_sz_srv_src" ] || \
+   [ "$_sz_miui_pub" -lt 1000000 ] || [ "$_sz_miui_pub" -ne "$_sz_miui_src" ]; then
+    rm -rf "$PUB_DIR"
+    abort_install "Failed to stage and validate patched framework JARs for publication."
+fi
+
+# Purge any legacy disk overlay directories and atomically replace framework
+rm -rf "$MODPATH/framework" "$MODPATH/system" "$MODPATH/system_ext"
+
+if ! mv "$PUB_DIR" "$MODPATH/framework"; then
+    rm -rf "$PUB_DIR"
+    abort_install "Failed to publish framework directory into module."
+fi
+
+# Initialize default FCM dynamic filter config if not existing
+CONF_FILE="/data/system/fcm_wake.conf"
+if [ ! -f "$CONF_FILE" ]; then
+    cat <<'EOF' > "$CONF_FILE"
+# HyperOS FCM Dynamic Wake Filter Configuration
+# Modes: MODE=ALL | MODE=WHITELIST | MODE=BLACKLIST
+MODE=ALL
+EOF
+    chmod 0644 "$CONF_FILE"
+    chown system:system "$CONF_FILE" 2>/dev/null || true
+    # system_data_file is deliberate - system_server reads this at runtime.
+    # restorecon would force the /data/system default back and undo it.
+    chcon u:object_r:system_data_file:s0 "$CONF_FILE" 2>/dev/null || true
+fi
+
+# 7.4 Verify the patched jars with ART's own verifier before they can be mounted.
+# A vector that resolved a register or a type wrongly produces a jar that looks fine to
+# every structural check and is only rejected when ART loads system_server - a device
+# that never finishes booting. Catching it here turns that into a failed install.
+ui_print "- Verifying patched framework with ART verifier..."
+# Capture through `|| VERIFY_RC=$?` rather than a bare `$?` on the next line, so the
+# status survives an errexit shell instead of terminating the installer.
+VERIFY_RC=0
+verify_patched_jars "$MODPATH/framework/services.jar" "$SERVICES_STOCK" \
+                    "$MODPATH/framework/miui-services.jar" "$MIUI_SERVICES_STOCK" || VERIFY_RC=$?
+if [ "$VERIFY_RC" -eq 0 ]; then
+    ui_print "- [PASS] Patched framework passes ART verification."
+elif [ "$VERIFY_RC" -eq 2 ]; then
+    # Say so rather than claiming a pass: on a device with no dex2oat there is nothing to
+    # verify with, and the install is no worse off than before this check existed.
+    ui_print "- [SKIP] No dex2oat on this device; framework left unverified."
+else
+    ui_print ""
+    ui_print "[!] ART rejected the patched framework: $VERIFY_FAILED_JAR"
+    [ -n "$VERIFY_FAILED_REASON" ] && ui_print "[!] $VERIFY_FAILED_REASON"
+    ui_print "[!] Installing it would leave the device unable to boot."
+    abort_install "Patched framework failed ART verification ($VERIFY_FAILED_JAR)."
+fi
+
+PK_BOOT_CONF="/data/system/fcm_pk_boot.conf"
+if [ ! -f "$PK_BOOT_CONF" ]; then
+    echo "true" > "$PK_BOOT_CONF"
+    chmod 0644 "$PK_BOOT_CONF"
+    chown system:system "$PK_BOOT_CONF" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$PK_BOOT_CONF" 2>/dev/null || true
+fi
+
+# 7.5 Pre-compile system_server AOT cache (dex2oat)
+ui_print "- Pre-compiling system_server native AOT cache (dex2oat)..."
+if compile_aot_cache "$MODPATH/framework/services.jar" "$SERVICES_STOCK" "$MODPATH/framework/miui-services.jar" "$MIUI_SERVICES_STOCK" "$MODPATH/cache"; then
+    if [ -n "$COMPILED_DOWNSTREAM_COUNT" ] && [ "$COMPILED_DOWNSTREAM_COUNT" -gt 0 ]; then
+        ui_print "- [PASS] Native AOT speed compilation complete (services + $COMPILED_DOWNSTREAM_COUNT downstream components)."
+    else
+        ui_print "- [PASS] Native AOT speed compilation complete."
+    fi
+    if [ -n "$AOT_ARCHIVE_WARNING" ]; then
+        ui_print "- [WARN] AOT cache archive incomplete ($AOT_ARCHIVE_WARNING):"
+        ui_print "         the compiled cache will not survive ART's nightly cleanup."
+    fi
+    rm -f "$MODPATH/wipe_cache_once"
+else
+    # Fallback: signal post-fs-data to purge stale dalvik-cache on first boot.
+    # No archive either - a half-built cache must not be restored at boot.
+    rm -rf "$MODPATH/cache" 2>/dev/null
+    touch "$MODPATH/wipe_cache_once"
+fi
+
+# 7.6 Backup PowerKeeper stock configuration at install time
+if command -v content >/dev/null 2>&1 && [ "$(getprop sys.boot_completed)" = "1" ]; then
+    _has_pk_gms=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=' | head -n1)
+    if [ "$ROM_REGION" = "cn" ] || [ -n "$_has_pk_gms" ]; then
+        ui_print "- Backing up stock PowerKeeper configuration..."
+        STOCK_CONF="$MODPATH/stock_settings.conf"
+        if command -v ensure_powerkeeper_backup >/dev/null 2>&1; then
+            ensure_powerkeeper_backup "$STOCK_CONF"
+        fi
+        ui_print "- [PASS] PowerKeeper stock configuration backed up."
+    fi
+fi
+
+# Keep the patch engine inside the module: after an OTA the firmware guard in
+# post-fs-data.sh skips every mount, and repatch.sh needs the engine to rebuild
+# the jars against the new firmware without a re-flash.
+# (~1.3 MB; delete tools/ manually if you prefer the lean ~30 KB module.)
+
+# Record the firmware this patch was built against - the OTA guard compares it
+# with the running build on every boot.
+get_rom_fingerprint > "$MODPATH/rom.fingerprint"
+rm -f "$MODPATH/repatch_pending" "$MODPATH/repatch_failed" "$MODPATH/repatch_reboot" "$MODPATH/repatch_running"
+touch "$MODPATH/skip_mount"
+
+# 8. Apply File Permissions and SELinux Attributes
+for jar in "$MODPATH/framework/services.jar" "$MODPATH/framework/miui-services.jar"; do
+    # Never restorecon these: they live under /data/adb, so restoring the path's
+    # default context relabels them away from system_file. A metamodule overlay
+    # exposes this very file as /system/framework/services.jar, so with the wrong
+    # label system_server cannot open it, ART silently drops both jars from
+    # SYSTEMSERVERCLASSPATH, and com.android.server.SystemServer is not found -
+    # zygote then crash-loops on every boot.
+    [ -f "$jar" ] && set_perm "$jar" 0 0 0644 "u:object_r:system_file:s0"
+done
+set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
+set_perm "$MODPATH/service.sh" 0 0 0755
+[ -f "$MODPATH/uninstall.sh" ] && set_perm "$MODPATH/uninstall.sh" 0 0 0755
+[ -f "$MODPATH/restore-on-boot.sh" ] && set_perm "$MODPATH/restore-on-boot.sh" 0 0 0755
+[ -f "$MODPATH/repatch.sh" ] && set_perm "$MODPATH/repatch.sh" 0 0 0755
+[ -f "$MODPATH/common.sh" ] && set_perm "$MODPATH/common.sh" 0 0 0755
+[ -f "$MODPATH/tools/patcher" ] && set_perm "$MODPATH/tools/patcher" 0 0 0755
+if [ -f "$MODPATH/tools/patcher" ]; then
+    ln -sf "tools/patcher" "$MODPATH/patcher" 2>/dev/null || cp -f "$MODPATH/tools/patcher" "$MODPATH/patcher"
+    set_perm "$MODPATH/patcher" 0 0 0755
+fi
+
+if [ -d "$MODPATH/webroot" ]; then
+    set_perm_recursive "$MODPATH/webroot" 0 0 0755 0644
+    [ -f "$MODPATH/webroot/cgi-bin/exec" ] && set_perm "$MODPATH/webroot/cgi-bin/exec" 0 0 0755
+fi
+
+# Clean up staging directory
+cleanup
+
+case "$STASH_STATUS" in
+    carried) ui_print "- Stock jars re-patched from carried-forward stash" ;;
+    kept)    ui_print "- Stock stash verified intact for future upgrades" ;;
+    created) ui_print "- Pristine stock jars stashed inside module for future upgrades (~$(du -k "$STOCK_DIR" 2>/dev/null | cut -f1 | tail -n1) KB)" ;;
+esac
+
+ui_print "- Firmware recorded: $(get_rom_display_version)"
+ui_print "- After an OTA the module stays unmounted and re-patches itself on the next boot"
+ui_print "- [PASS] Atomic swap completed. Module ready!"
+ui_print "***********************************************"

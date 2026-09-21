@@ -1,0 +1,4 @@
+dist/
+*.bak
+*.tmp
+.DS_Store

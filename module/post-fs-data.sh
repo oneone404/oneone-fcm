@@ -1,0 +1,300 @@
+#!/system/bin/sh
+MODDIR=${0%/*}
+
+# Hard fail-closed on OTA, a different slot build, or another device.
+if [ "$(getprop ro.product.device)" != "pandora" ] || \
+   [ "$(getprop ro.build.version.incremental)" != "OS3.0.319.0.WBLCNXM" ] || \
+   [ "$(getprop ro.build.version.sdk)" != "36" ]; then
+    touch "$MODDIR/skip_mount" "$MODDIR/repatch_pending"
+    exit 0
+fi
+
+# 1. Purge stale dalvik-cache artifacts ONCE on first boot after install/update
+#
+# Scope is deliberately limited to the legacy /data/dalvik-cache tree, which is
+# the only place compile_aot_cache writes to. The ART-managed tree under
+# /data/misc/apexdata/com.android.art/dalvik-cache is owned by odrefresh and must
+# NOT be touched: we never write replacements there, so deleting its system-server
+# artifacts only makes odrefresh recompile the whole boot classpath plus every
+# SYSTEMSERVERCLASSPATH and apex system-server jar on the next boot. That runs
+# before the home screen and blocks it for minutes, which reads as a hang and
+# gets force-rebooted - tripping the anti-bootloop counter of any metamodule we
+# delegate the mount to. Never delete artifacts this module does not replace.
+if [ -f "$MODDIR/wipe_cache_once" ]; then
+    rm -rf /data/dalvik-cache/*/*services* 2>/dev/null
+    rm -rf /data/dalvik-cache/*/*miui-services* 2>/dev/null
+    rm -rf /data/dalvik-cache/*/*apprecovery* 2>/dev/null
+    rm -rf /data/dalvik-cache/*/apex@*@javalib@service-* 2>/dev/null
+    rm -rf "$MODDIR/cache" 2>/dev/null
+    rm -f "$MODDIR/wipe_cache_once"
+fi
+
+# A re-patch cannot survive a reboot, so a running flag found this early was
+# left behind by one that was killed. Drop it, or the module would report
+# "re-patching" forever and refuse to start a new attempt.
+if [ -f "$MODDIR/repatch_running" ]; then
+    rm -f "$MODDIR/repatch_running"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] previous re-patch was interrupted by a reboot" >> "$MODDIR/repatch.log"
+fi
+
+# Ensure skip_mount is always enforced so root managers (KernelSU/APatch/Magisk)
+# never auto-mount disk directories into the global namespace.
+touch "$MODDIR/skip_mount"
+
+# Sourced helpers (e.g. get_rom_fingerprint, live_miui_services)
+[ -f "$MODDIR/common.sh" ] && . "$MODDIR/common.sh"
+
+# 2. Firmware Change Guard (OTA safety)
+# The patched jars are built against one specific firmware build. After an OTA
+# the rest of the ROM has moved on and serving them is a bootloop, so when the
+# build recorded at install time no longer matches the running one the module
+# serves nothing at all: the device boots on 100% stock framework and
+# service.sh re-patches against the new firmware after boot.
+if command -v get_rom_fingerprint >/dev/null 2>&1; then
+    CURRENT_FP="$(get_rom_fingerprint)"
+else
+    CURRENT_FP="$(getprop ro.build.fingerprint)|$(getprop ro.system.build.fingerprint)|$(getprop ro.system_ext.build.fingerprint)|$(getprop ro.build.version.incremental)|$(getprop persist.sys.xms.version)"
+fi
+STORED_FP="$(cat "$MODDIR/rom.fingerprint" 2>/dev/null)"
+
+if command -v is_fingerprint_match >/dev/null 2>&1; then
+    MATCH_OK=0
+    is_fingerprint_match "$STORED_FP" "$CURRENT_FP" && MATCH_OK=1
+else
+    MATCH_OK=0
+    [ -n "$STORED_FP" ] && [ "$STORED_FP" = "$CURRENT_FP" ] && MATCH_OK=1
+fi
+
+if [ "$MATCH_OK" -ne 1 ]; then
+    touch "$MODDIR/repatch_pending"
+    rm -f "$MODDIR/repatch_reboot"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] firmware changed or unverified ($STORED_FP -> $CURRENT_FP): module not mounted, re-patch pending" >> "$MODDIR/repatch.log"
+    exit 0
+fi
+
+# Clear transient state flags
+rm -f "$MODDIR/repatch_pending" "$MODDIR/repatch_reboot" "$MODDIR/repatch_failed"
+
+# 2.5 Put the AOT cache back if ART's nightly cleanup took it
+# BackgroundDexoptJob unlinks every /data/dalvik-cache artifact ART did not
+# produce, ours included; the archive under $MODDIR/cache keeps the inodes and
+# this restores the names before zygote starts (see restore_aot_cache).
+if command -v restore_aot_cache >/dev/null 2>&1 && [ -d "$MODDIR/cache" ]; then
+    _isa="$(resolve_isa 2>/dev/null)"
+    if [ -n "$_isa" ]; then
+        _restored="$(restore_aot_cache "$MODDIR/cache" "$_isa")"
+        if [ "${_restored:-0}" -gt 0 ] 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] restored $_restored AOT artifact(s) removed from /data/dalvik-cache/$_isa" >> "$MODDIR/repatch.log"
+        fi
+    fi
+fi
+
+# 3. Anonymous In-Memory tmpfs Stealth Mounts
+# Files are staged in a transient private tmpfs in RAM, verified, bind-mounted
+# to system targets with read-only enforcement, and the staging dir is destroyed.
+# Inodes remain pinned in kernel VFS with clean 0:xxx device and zero root tokens.
+mount_stealth_jar() {
+    _src="$1"
+    _dst="$2"
+    _name="$3"
+    [ -f "$_src" ] || return 1
+    [ -e "$_dst" ] || return 1
+    _sz=$(wc -c < "$_src" 2>/dev/null || echo 0)
+    [ "$_sz" -gt 1000000 ] || return 1
+
+    TMP_DIR="/dev/.fcm_stage_${$}_$(date +%s%N 2>/dev/null || echo $$)"
+    mkdir -p "$TMP_DIR" || return 1
+    if ! mount -t tmpfs -o mode=0755,size=100M fcm_stage "$TMP_DIR" 2>/dev/null; then
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    _staged="$TMP_DIR/$_name"
+    if ! cp -f "$_src" "$_staged" 2>/dev/null; then
+        umount -l "$TMP_DIR" 2>/dev/null || true
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    _staged_sz=$(wc -c < "$_staged" 2>/dev/null || echo 0)
+    if [ "$_staged_sz" -ne "$_sz" ]; then
+        umount -l "$TMP_DIR" 2>/dev/null || true
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    chmod 644 "$_staged" 2>/dev/null || true
+    if ! chcon u:object_r:system_file:s0 "$_staged" 2>/dev/null; then
+        umount -l "$TMP_DIR" 2>/dev/null || true
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    # Staging succeeded: validate any existing mount before replacing
+    _existing_src=$(awk -v tgt="$_dst" '
+        $5 == tgt {
+            for (i = 6; i <= NF; i++) {
+                if ($i == "-") {
+                    src = $(i+2);
+                    break;
+                }
+            }
+        }
+        END { if (src != "") print src; }
+    ' /proc/self/mountinfo 2>/dev/null)
+    if [ -n "$_existing_src" ]; then
+        case "$_existing_src" in
+            fcm_stage|"$MODDIR"/*|/data/adb/modules/oneone_fcm/*|/data/adb/modules_update/oneone_fcm/*)
+                umount "$_dst" 2>/dev/null || umount -l "$_dst" 2>/dev/null || true
+                ;;
+            *)
+                # Foreign module mount detected on target: abort to avoid detaching or clobbering other modules
+                umount -l "$TMP_DIR" 2>/dev/null || true
+                rm -rf "$TMP_DIR" 2>/dev/null
+                return 1
+                ;;
+        esac
+    fi
+
+    if ! mount -o bind "$_staged" "$_dst" 2>/dev/null; then
+        umount -l "$TMP_DIR" 2>/dev/null || true
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    if ! mount -o remount,ro,bind "$_dst" 2>/dev/null; then
+        umount -l "$_dst" 2>/dev/null || true
+        umount -l "$TMP_DIR" 2>/dev/null || true
+        rm -rf "$TMP_DIR" 2>/dev/null
+        return 1
+    fi
+
+    # Clean up staging mount; pinned VFS inode at $_dst persists
+    umount -l "$TMP_DIR" 2>/dev/null || true
+    rm -rf "$TMP_DIR" 2>/dev/null
+    return 0
+}
+
+SERVICES_DST="/system/framework/services.jar"
+
+# Resolve patched services.jar
+SERVICES_SRC=""
+if [ -f "$MODDIR/framework/services.jar" ]; then
+    SERVICES_SRC="$MODDIR/framework/services.jar"
+elif [ -f "$MODDIR/system/framework/services.jar" ]; then
+    SERVICES_SRC="$MODDIR/system/framework/services.jar"
+fi
+
+# Resolve patched miui-services.jar
+MIUI_SRC=""
+if [ -f "$MODDIR/framework/miui-services.jar" ]; then
+    MIUI_SRC="$MODDIR/framework/miui-services.jar"
+elif [ -f "$MODDIR/system_ext/framework/miui-services.jar" ]; then
+    MIUI_SRC="$MODDIR/system_ext/framework/miui-services.jar"
+elif [ -f "$MODDIR/system/system_ext/framework/miui-services.jar" ]; then
+    MIUI_SRC="$MODDIR/system/system_ext/framework/miui-services.jar"
+else
+    MIUI_SRC="$(find "$MODDIR" -path "*/framework/miui-services.jar" -type f 2>/dev/null | head -n1)"
+fi
+
+# Resolve live system destination for miui-services.jar
+if command -v live_miui_services >/dev/null 2>&1; then
+    MIUI_DST="$(live_miui_services)"
+else
+    MIUI_DST=""
+    for _p in /system_ext/framework/miui-services.jar \
+             /system/system_ext/framework/miui-services.jar \
+             /system/framework/miui-services.jar \
+             /product/framework/miui-services.jar \
+             /system/product/framework/miui-services.jar; do
+        if [ -f "$_p" ]; then
+            MIUI_DST="$_p"
+            break
+        fi
+    done
+fi
+[ -z "$MIUI_DST" ] && MIUI_DST="/system_ext/framework/miui-services.jar"
+
+# Both source JARs and target destinations must be present and valid
+if [ -z "$SERVICES_SRC" ] || [ ! -f "$SERVICES_SRC" ] || [ ! -e "$SERVICES_DST" ] || \
+   [ -z "$MIUI_SRC" ] || [ ! -f "$MIUI_SRC" ] || [ -z "$MIUI_DST" ] || [ ! -e "$MIUI_DST" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: framework source or destination missing (services: $SERVICES_SRC -> $SERVICES_DST, miui: $MIUI_SRC -> $MIUI_DST)" >> "$MODDIR/repatch.log"
+    exit 0
+fi
+
+# 3a. Prefer handing the mount to a skip_mount-respecting metamodule (mountify).
+# Its OverlayFS mounts show a clean /mnt/vendor source with no /adb/modules token
+# and are read-only, so integrity checkers (banking / payment apps) stop flagging
+# a module mount over /system. We build the system/ layout it consumes as
+# hardlinks to the already-published jars (no data copy, same filesystem) and
+# clear skip_mount so mountify's later metamount phase overlays them. On a
+# firmware mismatch we already exited above with skip_mount intact, so mountify
+# skips us after an OTA exactly like the self-mount path — the OTA guard holds.
+# Any failure here falls through to the in-memory stealth mount below.
+# The resolvers above also accept published layouts that already live inside
+# $MODDIR/system (legacy installs, and the find() fallback). There the tree IS
+# the published source, not a stale staging artifact, so it must never be
+# deleted: doing so would destroy the patched jars and leave both the delegated
+# and the self-mount path with a missing source.
+_src_in_system=0
+case "$SERVICES_SRC" in "$MODDIR"/system/*) _src_in_system=1 ;; esac
+case "$MIUI_SRC" in "$MODDIR"/system/*) _src_in_system=1 ;; esac
+
+if metamodule_will_mount && mountify_maps_cleanly "$SERVICES_DST" "$MIUI_DST"; then
+    _srv_rel="$(target_to_module_rel "$SERVICES_DST")"
+    _miui_rel="$(target_to_module_rel "$MIUI_DST")"
+    _staged=0
+    if [ -n "$_srv_rel" ] && [ -n "$_miui_rel" ]; then
+        if [ "$_src_in_system" -eq 1 ]; then
+            # Sources already sit in the system/ tree: keep it as published and
+            # delegate only when its layout matches the live targets.
+            [ -f "$MODDIR/system/$_srv_rel" ] && [ -f "$MODDIR/system/$_miui_rel" ] && _staged=1
+        else
+            rm -rf "$MODDIR/system"
+            if mkdir -p "$MODDIR/system/${_srv_rel%/*}" "$MODDIR/system/${_miui_rel%/*}" 2>/dev/null && \
+               ln -f "$SERVICES_SRC" "$MODDIR/system/$_srv_rel" 2>/dev/null && \
+               ln -f "$MIUI_SRC" "$MODDIR/system/$_miui_rel" 2>/dev/null; then
+                _staged=1
+            else
+                rm -rf "$MODDIR/system"
+            fi
+        fi
+    fi
+    if [ "$_staged" -eq 1 ]; then
+        rm -f "$MODDIR/skip_mount"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] framework mount delegated to metamodule via system/ overlay (skip_mount cleared)" >> "$MODDIR/repatch.log"
+        exit 0
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] metamodule overlay staging unavailable, falling back to in-memory stealth mount" >> "$MODDIR/repatch.log"
+fi
+
+# Not delegating: drop only a staging tree we own - never one holding the
+# published sources - and keep skip_mount enforced so no root manager
+# auto-mounts our on-disk module directory into the namespace.
+[ "$_src_in_system" -eq 0 ] && rm -rf "$MODDIR/system"
+touch "$MODDIR/skip_mount"
+
+# Mount transactionally with automatic rollback on any failure
+MOUNTED_TARGETS=""
+
+rollback_mounts() {
+    for _tgt in $MOUNTED_TARGETS; do
+        umount -l "$_tgt" 2>/dev/null || umount "$_tgt" 2>/dev/null || true
+    done
+}
+
+if mount_stealth_jar "$SERVICES_SRC" "$SERVICES_DST" "services.jar"; then
+    MOUNTED_TARGETS="$MOUNTED_TARGETS $SERVICES_DST"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: failed to stealth-mount services.jar" >> "$MODDIR/repatch.log"
+    rollback_mounts
+    exit 0
+fi
+
+if mount_stealth_jar "$MIUI_SRC" "$MIUI_DST" "miui-services.jar"; then
+    MOUNTED_TARGETS="$MOUNTED_TARGETS $MIUI_DST"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: failed to stealth-mount miui-services.jar to $MIUI_DST, rolling back" >> "$MODDIR/repatch.log"
+    rollback_mounts
+    exit 0
+fi

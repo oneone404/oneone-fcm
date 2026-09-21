@@ -1,0 +1,1039 @@
+#!/system/bin/sh
+# ==============================================================================
+# HyperOS FCM Whitelist & Wake Filter - KernelSU CGI Backend
+# ==============================================================================
+
+DATA_DIR="/data/system"
+if [ ! -d "$DATA_DIR" ] || [ ! -w "$DATA_DIR" ]; then
+    DATA_DIR="${TMPDIR:-/tmp}"
+fi
+CONF_FILE="$DATA_DIR/fcm_wake.conf"
+SOUND_BACKUP_FILE="$DATA_DIR/fcm_sound_backup.json"
+SOUND_STATE_FILE="$DATA_DIR/fcm_sound_state.json"
+SOUND_LOCK_FILE="$DATA_DIR/fcm_sound.lock"
+SYNCED_CACHE_FILE="$DATA_DIR/fcm_synced_channels.txt"
+PK_BOOT_CONF="$DATA_DIR/fcm_pk_boot.conf"
+
+# Resolve module directory
+MODDIR="${0%/*}/../.."
+[ -d "$MODDIR" ] || MODDIR="/data/adb/modules/oneone_fcm"
+[ -d "$MODDIR" ] || MODDIR="/data/adb/modules_update/oneone_fcm"
+[ -f "$MODDIR/common.sh" ] && . "$MODDIR/common.sh"
+STOCK_CONF="$MODDIR/stock_settings.conf"
+
+acquire_sound_lock() {
+    _retries=30
+    while [ "$_retries" -gt 0 ]; do
+        if ( set -C; echo "$$" > "$SOUND_LOCK_FILE" ) 2>/dev/null; then
+            return 0
+        fi
+        _retries=$((_retries - 1))
+        _lock_pid=$(cat "$SOUND_LOCK_FILE" 2>/dev/null | tr -cd '0-9')
+        if [ -n "$_lock_pid" ]; then
+            if ! kill -0 "$_lock_pid" 2>/dev/null; then
+                rm -f "$SOUND_LOCK_FILE" 2>/dev/null || return 1
+                continue
+            fi
+        else
+            rm -f "$SOUND_LOCK_FILE" 2>/dev/null || return 1
+            continue
+        fi
+        sleep 0.05 2>/dev/null || sleep 1
+    done
+    return 1
+}
+
+release_sound_lock() {
+    _lock_pid=$(cat "$SOUND_LOCK_FILE" 2>/dev/null | tr -cd '0-9')
+    if [ "$_lock_pid" = "$$" ]; then
+        rm -f "$SOUND_LOCK_FILE" 2>/dev/null
+    fi
+}
+
+read_pk_boot_config() {
+    PK_GMS_BOOT="true"
+    if [ -f "$PK_BOOT_CONF" ]; then
+        _bval=$(cat "$PK_BOOT_CONF" 2>/dev/null | tr -d ' \r\n')
+        [ "$_bval" = "false" ] || [ "$_bval" = "0" ] && PK_GMS_BOOT="false"
+    fi
+}
+
+disarm_powerkeeper_gms() {
+    # Backup is best-effort; disarm should proceed even if backup fails (e.g. first run before stock state exists)
+    command -v ensure_powerkeeper_backup >/dev/null 2>&1 && ensure_powerkeeper_backup "$STOCK_CONF"
+    _pk_disarm_status=0
+    content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
+      --method PUT_misc --arg gms_control --extra value:s:false 2>/dev/null || _pk_disarm_status=1
+    for _p in com.google.android.gms com.android.vending; do
+      content update --uri content://com.miui.powerkeeper.configure/userTable \
+        --bind bgControl:s:noRestrict --where "pkgName='${_p}' AND userId=0" 2>/dev/null || _pk_disarm_status=1
+      _has_entry=$(content query --uri content://com.miui.powerkeeper.configure/userTable --where "pkgName='${_p}' AND userId=0" 2>/dev/null | grep -o 'pkgName=' | head -n1)
+      if [ -z "$_has_entry" ]; then
+        content insert --uri content://com.miui.powerkeeper.configure/userTable \
+          --bind pkgName:s:"${_p}" --bind userId:i:0 --bind bgControl:s:noRestrict 2>/dev/null || _pk_disarm_status=1
+      fi
+    done
+    iptables -F gms_wall 2>/dev/null
+    ip6tables -F gms_wall 2>/dev/null
+    return "$_pk_disarm_status"
+}
+
+read_alert_fix_config() {
+    ALERT_GROUP_FIX=true
+    ALERT_ANTI_MUTE_UPDATE=true
+    ALERT_UNTHROTTLE_ALERT=false
+    if [ -f "$CONF_FILE" ]; then
+        if grep -qi "^GROUP_ALERT_FIX=0" "$CONF_FILE" || grep -qi "^GROUP_ALERT_FIX=false" "$CONF_FILE"; then
+            ALERT_GROUP_FIX=false
+        fi
+        if grep -qi "^ANTI_MUTE_UPDATE=0" "$CONF_FILE" || grep -qi "^ANTI_MUTE_UPDATE=false" "$CONF_FILE"; then
+            ALERT_ANTI_MUTE_UPDATE=false
+        fi
+        ALERT_UNTHROTTLE_ALERT=false
+        if grep -qi "^UNTHROTTLE_ALERT=1" "$CONF_FILE" || grep -qi "^UNTHROTTLE_ALERT=true" "$CONF_FILE"; then
+            ALERT_UNTHROTTLE_ALERT=true
+        fi
+    fi
+}
+
+read_fsi_packages() {
+    FSI_PKGS=""
+    if [ -f "$CONF_FILE" ]; then
+        FSI_PKGS=$(grep "^FSI_PKG=" "$CONF_FILE" 2>/dev/null | cut -d= -f2 | tr -d '\r' | grep -E '^[a-zA-Z0-9._-]+$')
+    fi
+}
+
+format_fsi_packages_json() {
+    read_fsi_packages
+    FSI_JSON=$(echo "$FSI_PKGS" | awk 'NF{if(n++) printf ","; printf "\"%s\"", $0}' | awk '{printf "[%s]", $0}')
+    # Parenthesised: `A || B && C` parses as `(A || B) && C`, so the guard ran
+    # the assignment in cases it was never meant to.
+    if [ -z "$FSI_JSON" ]; then
+        FSI_JSON="[]"
+    fi
+}
+
+# apply_fsi_appops / restore_fsi_appops live in common.sh so that the WebUI and
+# uninstall grant and give back exactly the same set of ops through the same
+# recorded state.
+
+write_alert_fix_config() {
+    TMP_CONF="$CONF_FILE.tmp.$$"
+    if [ -f "$CONF_FILE" ]; then
+        grep -v -i "^GROUP_ALERT_FIX=" "$CONF_FILE" | grep -v -i "^ANTI_MUTE_UPDATE=" | grep -v -i "^PROMOTE_HIGH_PRIORITY=" | grep -v -i "^PROMOTE_PRIORITY=" | grep -v -i "^UNTHROTTLE_ALERT=" > "$TMP_CONF"
+    else
+        echo "# HyperOS FCM Dynamic Wake Filter Configuration" > "$TMP_CONF"
+        echo "MODE=ALL" >> "$TMP_CONF"
+    fi
+
+    [ "$ALERT_GROUP_FIX" = "false" ] && echo "GROUP_ALERT_FIX=0" >> "$TMP_CONF" || echo "GROUP_ALERT_FIX=1" >> "$TMP_CONF"
+    [ "$ALERT_ANTI_MUTE_UPDATE" = "false" ] && echo "ANTI_MUTE_UPDATE=0" >> "$TMP_CONF" || echo "ANTI_MUTE_UPDATE=1" >> "$TMP_CONF"
+    [ "$ALERT_UNTHROTTLE_ALERT" = "true" ] && echo "UNTHROTTLE_ALERT=1" >> "$TMP_CONF" || echo "UNTHROTTLE_ALERT=0" >> "$TMP_CONF"
+
+    chmod 0644 "$TMP_CONF" 2>/dev/null || true
+    chown system:system "$TMP_CONF" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$TMP_CONF" 2>/dev/null || true
+    mv -f "$TMP_CONF" "$CONF_FILE" 2>/dev/null || return 1
+}
+
+read_sound_settings() {
+    _SYS=$(settings list system 2>/dev/null)
+    _GLOB=$(settings list global 2>/dev/null)
+    _SEC=$(settings list secure 2>/dev/null)
+
+    if [ -z "$_SYS" ] && [ -z "$_GLOB" ]; then
+        V_RNM_MUTE=$(settings get system random_note_mode_mute_time_interval_ms 2>/dev/null | tr -d '\r\n')
+        V_RNM_SEQ_TIME=$(settings get system random_note_mode_sequence_time_interval_ms 2>/dev/null | tr -d '\r\n')
+        V_RNM_SEQ_NUM=$(settings get system random_note_mode_sequence_sound_number 2>/dev/null | tr -d '\r\n')
+        V_NOTIF_COOL_EN=$(settings get system notification_cooldown_enabled 2>/dev/null | tr -d '\r\n')
+        [ -z "$V_NOTIF_COOL_EN" ] || [ "$V_NOTIF_COOL_EN" = "null" ] && V_NOTIF_COOL_EN=$(settings get global notification_cooldown_enabled 2>/dev/null | tr -d '\r\n')
+        V_NOTIF_COOL_ALL=$(settings get system notification_cooldown_all 2>/dev/null | tr -d '\r\n')
+        [ -z "$V_NOTIF_COOL_ALL" ] || [ "$V_NOTIF_COOL_ALL" = "null" ] && V_NOTIF_COOL_ALL=$(settings get global notification_cooldown_all 2>/dev/null | tr -d '\r\n')
+        V_NOTIF_COOL_VIB=$(settings get system notification_cooldown_vibrate_unlocked 2>/dev/null | tr -d '\r\n')
+        [ -z "$V_NOTIF_COOL_VIB" ] || [ "$V_NOTIF_COOL_VIB" = "null" ] && V_NOTIF_COOL_VIB=$(settings get global notification_cooldown_vibrate_unlocked 2>/dev/null | tr -d '\r\n')
+        V_MUTE_OFF_BODY=$(settings get global obtain_mute_when_off_body 2>/dev/null | tr -d '\r\n')
+        [ -z "$V_MUTE_OFF_BODY" ] || [ "$V_MUTE_OFF_BODY" = "null" ] && V_MUTE_OFF_BODY=$(settings get system obtain_mute_when_off_body 2>/dev/null | tr -d '\r\n')
+        return
+    fi
+
+    V_RNM_MUTE=$(echo "$_SYS" | grep "^random_note_mode_mute_time_interval_ms=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    V_RNM_SEQ_TIME=$(echo "$_SYS" | grep "^random_note_mode_sequence_time_interval_ms=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    V_RNM_SEQ_NUM=$(echo "$_SYS" | grep "^random_note_mode_sequence_sound_number=" | head -n1 | cut -d= -f2- | tr -d '\r')
+
+    V_NOTIF_COOL_EN=$(echo "$_SYS" | grep "^notification_cooldown_enabled=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    [ -z "$V_NOTIF_COOL_EN" ] || [ "$V_NOTIF_COOL_EN" = "null" ] && V_NOTIF_COOL_EN=$(echo "$_GLOB" | grep "^notification_cooldown_enabled=" | head -n1 | cut -d= -f2- | tr -d '\r')
+
+    V_NOTIF_COOL_ALL=$(echo "$_SYS" | grep "^notification_cooldown_all=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    [ -z "$V_NOTIF_COOL_ALL" ] || [ "$V_NOTIF_COOL_ALL" = "null" ] && V_NOTIF_COOL_ALL=$(echo "$_GLOB" | grep "^notification_cooldown_all=" | head -n1 | cut -d= -f2- | tr -d '\r')
+
+    V_NOTIF_COOL_VIB=$(echo "$_SYS" | grep "^notification_cooldown_vibrate_unlocked=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    [ -z "$V_NOTIF_COOL_VIB" ] || [ "$V_NOTIF_COOL_VIB" = "null" ] && V_NOTIF_COOL_VIB=$(echo "$_GLOB" | grep "^notification_cooldown_vibrate_unlocked=" | head -n1 | cut -d= -f2- | tr -d '\r')
+
+    V_MUTE_OFF_BODY=$(echo "$_GLOB" | grep "^obtain_mute_when_off_body=" | head -n1 | cut -d= -f2- | tr -d '\r')
+    [ -z "$V_MUTE_OFF_BODY" ] || [ "$V_MUTE_OFF_BODY" = "null" ] && V_MUTE_OFF_BODY=$(echo "$_SYS" | grep "^obtain_mute_when_off_body=" | head -n1 | cut -d= -f2- | tr -d '\r')
+}
+
+compute_sound_features() {
+    read_sound_settings
+
+    FEAT_MIUI=false
+    [ "$V_RNM_MUTE" = "0" ] && [ "$V_RNM_SEQ_TIME" = "0" ] && [ "$V_RNM_SEQ_NUM" = "100" ] && FEAT_MIUI=true
+
+    FEAT_A15=false
+    [ "$V_NOTIF_COOL_EN" = "0" ] && [ "$V_NOTIF_COOL_ALL" = "0" ] && [ "$V_NOTIF_COOL_VIB" = "0" ] && FEAT_A15=true
+
+    FEAT_OFFBODY=false
+    [ "$V_MUTE_OFF_BODY" = "0" ] && FEAT_OFFBODY=true
+
+    SOUND_ACTIVE=false
+    if [ "$FEAT_MIUI" = "true" ] && [ "$FEAT_A15" = "true" ] && [ "$FEAT_OFFBODY" = "true" ]; then
+        SOUND_ACTIVE=true
+    fi
+
+    SOUND_BACKUP=false
+    [ -f "$SOUND_BACKUP_FILE" ] && SOUND_BACKUP=true
+}
+
+sync_sound_state() {
+    compute_sound_features
+    TMP_STATE="$DATA_DIR/fcm_sound_state.json.tmp.$$"
+    echo "{\"active\":$SOUND_ACTIVE}" > "$TMP_STATE" 2>/dev/null || true
+    chmod 0644 "$TMP_STATE" 2>/dev/null || true
+    chown system:system "$TMP_STATE" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$TMP_STATE" 2>/dev/null || true
+    mv -f "$TMP_STATE" "$SOUND_STATE_FILE" 2>/dev/null || true
+}
+
+get_b_val() {
+    _key="$1"
+    [ -f "$SOUND_BACKUP_FILE" ] || return 0
+    sed -n "s/.*\"$_key\":\"\([^\"]*\)\".*/\1/p" "$SOUND_BACKUP_FILE" 2>/dev/null
+}
+
+create_sound_backup_if_needed() {
+    [ -f "$SOUND_BACKUP_FILE" ] && return 0
+
+    acquire_sound_lock || true
+
+    if [ ! -f "$SOUND_BACKUP_FILE" ]; then
+        read_sound_settings
+        TMP_BACKUP="$DATA_DIR/fcm_sound_backup.json.tmp.$$"
+        printf '{"rnm_mute":"%s","rnm_seq_time":"%s","rnm_seq_num":"%s","cooldown_en":"%s","cooldown_all":"%s","cooldown_vib":"%s","mute_off_body":"%s"}\n' \
+            "$V_RNM_MUTE" "$V_RNM_SEQ_TIME" "$V_RNM_SEQ_NUM" "$V_NOTIF_COOL_EN" "$V_NOTIF_COOL_ALL" "$V_NOTIF_COOL_VIB" "$V_MUTE_OFF_BODY" > "$TMP_BACKUP"
+        chmod 0644 "$TMP_BACKUP" 2>/dev/null || true
+        chown system:system "$TMP_BACKUP" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$TMP_BACKUP" 2>/dev/null || true
+        if [ ! -f "$SOUND_BACKUP_FILE" ]; then
+            mv -f "$TMP_BACKUP" "$SOUND_BACKUP_FILE" 2>/dev/null || true
+        else
+            rm -f "$TMP_BACKUP" 2>/dev/null || true
+        fi
+    fi
+
+    release_sound_lock
+}
+
+put_setting() {
+    _ns="$1"
+    _key="$2"
+    _val="$3"
+
+    if ! settings put "$_ns" "$_key" "$_val" 2>/dev/null; then
+        return 1
+    fi
+    _cur=$(settings get "$_ns" "$_key" 2>/dev/null | tr -d '\r\n')
+    if [ "$_cur" != "$_val" ]; then
+        return 1
+    fi
+    return 0
+}
+
+restore_setting() {
+    _ns="$1"
+    _key="$2"
+    _val="$3"
+
+    if [ -z "$_val" ] || [ "$_val" = "null" ]; then
+        if ! settings delete "$_ns" "$_key" 2>/dev/null; then
+            return 1
+        fi
+        _cur=$(settings get "$_ns" "$_key" 2>/dev/null | tr -d '\r\n')
+        if [ -n "$_cur" ] && [ "$_cur" != "null" ]; then
+            return 1
+        fi
+    else
+        if ! settings put "$_ns" "$_key" "$_val" 2>/dev/null; then
+            return 1
+        fi
+        _cur=$(settings get "$_ns" "$_key" 2>/dev/null | tr -d '\r\n')
+        if [ "$_cur" != "$_val" ]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+CHANNEL_SYNC_CONF="$DATA_DIR/fcm_channel_sync.json"
+
+read_channel_sync_config() {
+    SYNC_BOOT="true"
+    SYNC_SOUND="true"
+    SYNC_VIB="true"
+    SYNC_LOCK="true"
+    SYNC_FLOAT="true"
+
+    if [ -f "$CHANNEL_SYNC_CONF" ]; then
+        _b=$(grep -o '"auto_sync_boot":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
+        [ "$_b" = "false" ] && SYNC_BOOT="false"
+        _s=$(grep -o '"sync_sound":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
+        [ "$_s" = "false" ] && SYNC_SOUND="false"
+        _v=$(grep -o '"sync_vibration":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
+        [ "$_v" = "false" ] && SYNC_VIB="false"
+        _l=$(grep -o '"sync_lockscreen":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
+        [ "$_l" = "false" ] && SYNC_LOCK="false"
+        _f=$(grep -o '"sync_float":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
+        [ "$_f" = "false" ] && SYNC_FLOAT="false"
+    fi
+}
+
+get_target_sync_packages() {
+    _mode="ALL"
+    _cfg_pkgs=""
+    if [ -f "$CONF_FILE" ]; then
+        _mode=$(grep "^MODE=" "$CONF_FILE" 2>/dev/null | head -n1 | cut -d= -f2 | tr -d '\r\n ')
+        [ -z "$_mode" ] && _mode="ALL"
+        _cfg_pkgs=$(grep -v "^#" "$CONF_FILE" 2>/dev/null | grep -v "^MODE=" | grep -v "^$" | tr -d '\r' | grep -E '^[a-zA-Z0-9._-]+$')
+    fi
+
+    case "$_mode" in
+        WHITELIST)
+            echo "$_cfg_pkgs"
+            echo "com.google.android.gms"
+            ;;
+        BLACKLIST)
+            _user_pkgs=$(pm list packages -3 2>/dev/null | sed 's/^package://' | tr -d '\r')
+            if [ -n "$_cfg_pkgs" ]; then
+                for _p in $_user_pkgs; do
+                    if ! echo "$_cfg_pkgs" | grep -qx "$_p"; then
+                        echo "$_p"
+                    fi
+                done
+            else
+                echo "$_user_pkgs"
+            fi
+            echo "com.google.android.gms"
+            ;;
+        ALL|*)
+            pm list packages -3 2>/dev/null | sed 's/^package://' | tr -d '\r'
+            echo "com.google.android.gms"
+            ;;
+    esac
+}
+
+sync_notification_channels() {
+    read_channel_sync_config
+
+    _TARGET_PKGS=$(get_target_sync_packages | tr '\n' ' ')
+    _XML="/data/user_de/0/com.android.systemui/shared_prefs/app_notification.xml"
+    [ -f "$_XML" ] || _XML="/data/user/0/com.android.systemui/shared_prefs/app_notification.xml"
+    [ -f "$_XML" ] || _XML=""
+
+    _STATS_FILE="$DATA_DIR/fcm_sync_stats.tmp.$$"
+    _SYNC_CACHE="$SYNCED_CACHE_FILE"
+
+    dumpsys notification --noredact 2>/dev/null | awk -v xml="$_XML" -v cache="$_SYNC_CACHE" -v upkgs="$_TARGET_PKGS" -v stats="$_STATS_FILE" '
+      BEGIN {
+        total_ch = 0;
+        new_ch = 0;
+        split(upkgs, uarr, " ");
+        for (i in uarr) if (uarr[i] != "") allowed[uarr[i]] = 1;
+        if (xml != "") {
+          while ((getline line < xml) > 0) {
+            if (match(line, /name="([^"]+)"/)) {
+              n = substr(line, RSTART+6, RLENGTH-7);
+              existing[n] = 1;
+              sub(/_(canSound|sound|canVibrate|vibrate|canShowOnKeyguard|showOnKeyguard|canShowFloat|float)$/, "", n);
+              existing[n] = 1;
+            }
+          }
+          close(xml);
+        }
+        if (cache != "") {
+          while ((getline line < cache) > 0) {
+            gsub(/[\r\n]/, "", line);
+            if (line != "") existing[line] = 1;
+          }
+          close(cache);
+        }
+      }
+      /^ *AppSettings: / {
+        sub(/^ *AppSettings: /, "");
+        split($0, a, " ");
+        pkg = a[1];
+        if ((pkg in allowed)) {
+          if (!(pkg in existing) && !(pkg "_sound" in existing) && !(pkg "_canSound" in existing)) {
+            print pkg "\t_app_";
+            existing[pkg] = 1;
+            existing[pkg "_sound"] = 1;
+            new_ch++;
+          }
+        }
+      }
+      /^ *NotificationChannel\{mId=/ {
+        match($0, /mId=([^,]+)/);
+        id = substr($0, RSTART+4, RLENGTH-4);
+        gsub(/\047/, "", id);
+        if ((pkg in allowed) && id != "") {
+          total_ch++;
+          k1 = pkg ":" id;
+          k2 = pkg "_" id;
+          if (!(k1 in existing) && !(k2 in existing) && !(k1 "_sound" in existing) && !(k2 "_sound" in existing) && !(k1 "_canSound" in existing)) {
+            print pkg "\t" id;
+            existing[k1] = 1;
+            existing[k2] = 1;
+            new_ch++;
+          }
+        }
+      }
+      END {
+        if (stats != "") {
+          print total_ch "\t" new_ch > stats;
+          close(stats);
+        }
+      }
+    ' | {
+    while IFS=$'\t' read -r pkg ch; do
+      if [ "$ch" = "_app_" ]; then
+        (
+          nice -n 15 content call --uri content://statusbar.notification --method setSound --extra package:s:"$pkg" --extra canSound:b:true 2>/dev/null
+          [ "$SYNC_VIB" = "true" ] && nice -n 15 content call --uri content://statusbar.notification --method setVibrate --extra package:s:"$pkg" --extra canVibrate:b:true 2>/dev/null
+          [ "$SYNC_LOCK" = "true" ] && nice -n 15 content call --uri content://statusbar.notification --method setShowOnKeyguard --extra package:s:"$pkg" --extra canShowOnKeyguard:b:true 2>/dev/null
+          echo "$pkg" >> "$SYNCED_CACHE_FILE" 2>/dev/null || true
+        ) &
+      elif [ -n "$ch" ]; then
+        escaped_ch="${ch//:/\\:}"
+        (
+          nice -n 15 content call --uri content://statusbar.notification --method setSound --extra package:s:"$pkg" --extra "channel_id:s:$escaped_ch" --extra canSound:b:true 2>/dev/null
+          [ "$SYNC_VIB" = "true" ] && nice -n 15 content call --uri content://statusbar.notification --method setVibrate --extra package:s:"$pkg" --extra "channel_id:s:$escaped_ch" --extra canVibrate:b:true 2>/dev/null
+          [ "$SYNC_LOCK" = "true" ] && nice -n 15 content call --uri content://statusbar.notification --method setShowOnKeyguard --extra package:s:"$pkg" --extra "channel_id:s:$escaped_ch" --extra canShowOnKeyguard:b:true 2>/dev/null
+          [ "$SYNC_FLOAT" = "true" ] && nice -n 15 content call --uri content://statusbar.notification --method setFloat --extra package:s:"$pkg" --extra "channel_id:s:$escaped_ch" --extra canShowFloat:b:true 2>/dev/null
+          echo "${pkg}:${ch}" >> "$SYNCED_CACHE_FILE" 2>/dev/null || true
+        ) &
+      fi
+      _job_count=$(jobs -p 2>/dev/null | wc -l)
+      while [ "$_job_count" -ge 3 ]; do
+        sleep 0.05
+        _job_count=$(jobs -p 2>/dev/null | wc -l)
+      done
+    done
+    wait
+    }
+
+    [ -f "$SYNCED_CACHE_FILE" ] && chmod 0644 "$SYNCED_CACHE_FILE" 2>/dev/null || true
+
+    _TOTAL_CH=0
+    _NEW_CH=0
+    if [ -f "$_STATS_FILE" ]; then
+      read -r _TOTAL_CH _NEW_CH < "$_STATS_FILE"
+      rm -f "$_STATS_FILE" 2>/dev/null || true
+    fi
+    [ -z "$_TOTAL_CH" ] && _TOTAL_CH=0
+    [ -z "$_NEW_CH" ] && _NEW_CH=0
+}
+
+# Ensure config file exists with proper permissions
+if [ ! -f "$CONF_FILE" ]; then
+    cat <<'EOF' > "$CONF_FILE"
+# HyperOS FCM Dynamic Wake Filter Configuration
+# Modes: MODE=ALL | MODE=WHITELIST | MODE=BLACKLIST
+MODE=ALL
+EOF
+    chmod 0644 "$CONF_FILE" 2>/dev/null || true
+    chown system:system "$CONF_FILE" 2>/dev/null || true
+    chcon u:object_r:system_data_file:s0 "$CONF_FILE" 2>/dev/null || true
+fi
+
+ACTION="${1:-status}"
+
+case "$ACTION" in
+    status|load_status|get_status)
+        MODE="ALL"
+        PACKAGES=""
+        if [ -f "$CONF_FILE" ]; then
+            MODE_LINE=$(grep "^MODE=" "$CONF_FILE" | head -n1 | cut -d= -f2 | tr -d '\r\n ')
+            [ -n "$MODE_LINE" ] && MODE="$MODE_LINE"
+            
+            # Read non-comment, non-empty, non-config lines as JSON array
+            PACKAGES=$(grep -v "^#" "$CONF_FILE" | grep -v "=" | grep -v "^$" | tr -d '\r' | awk 'BEGIN{first=1; printf "["}{if(!first) printf ","; printf "\"%s\"", $0; first=0}END{printf "]"}')
+        fi
+        [ -z "$PACKAGES" ] && PACKAGES="[]"
+
+        # Prestart status
+        PRESTART=$(getprop persist.sys.miui.prestart)
+        [ -z "$PRESTART" ] && PRESTART="true"
+
+        # List user packages (third party)
+        USER_PKGS=$(pm list packages -3 2>/dev/null | sed 's/^package://' | sort | awk 'BEGIN{first=1; printf "["}{if(!first) printf ","; printf "\"%s\"", $0; first=0}END{printf "]"}')
+        [ -z "$USER_PKGS" ] && USER_PKGS="[]"
+
+        compute_sound_features
+        read_channel_sync_config
+        read_alert_fix_config
+        read_pk_boot_config
+
+        # GMS Parity indicators
+        PK_GMS_CTRL=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+        if [ -z "$PK_GMS_CTRL" ]; then
+            _IS_GLOBAL=$(getprop ro.product.mod_device 2>/dev/null | grep -i 'global' || getprop ro.miui.customized.region 2>/dev/null | grep -i 'global' || getprop ro.build.characteristics 2>/dev/null | grep -i 'global')
+            if [ -n "$_IS_GLOBAL" ]; then
+                PK_GMS_CTRL="global_na"
+            else
+                PK_GMS_CTRL="unknown"
+            fi
+        fi
+
+        V18_ACTIVE=false
+        if [ ! -f "$MODDIR/repatch_pending" ] && [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; then
+            _MIUI_JAR=""
+            if command -v live_miui_services >/dev/null 2>&1; then
+                _MIUI_JAR="$(live_miui_services)"
+            else
+                for _p in /system_ext/framework/miui-services.jar /system/system_ext/framework/miui-services.jar /system/framework/miui-services.jar /product/framework/miui-services.jar; do
+                    [ -f "$_p" ] && { _MIUI_JAR="$_p"; break; }
+                done
+            fi
+            if [ -n "$_MIUI_JAR" ] && grep -F -q "shouldBypassFullScreenIntent" "$_MIUI_JAR" 2>/dev/null; then
+                V18_ACTIVE=true
+            fi
+        fi
+
+        format_fsi_packages_json
+
+        printf '{"status":"ok","mode":"%s","packages":%s,"installed":%s,"prestart":"%s","sound_active":%s,"sound_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"channel_sync":{"auto_sync_boot":%s,"sync_sound":%s,"sync_vibration":%s,"sync_lockscreen":%s,"sync_float":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s},"gms_parity":{"powerkeeper_gms_control":"%s","boot_apply":%s,"v18_active":%s},"fsi_packages":%s}\n' \
+            "$MODE" "$PACKAGES" "$USER_PKGS" "$PRESTART" "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$SYNC_BOOT" "$SYNC_SOUND" "$SYNC_VIB" "$SYNC_LOCK" "$SYNC_FLOAT" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT" "$PK_GMS_CTRL" "$PK_GMS_BOOT" "$V18_ACTIVE" "$FSI_JSON"
+        ;;
+
+    stopped|capabilities)
+        # Fetch stopped packages and FSI/lockscreen capable packages in a single dumpsys package pass
+        DUMPSYS_OUT=$(dumpsys package 2>/dev/null | awk '
+          /Package \[/ { sub(/.*Package \[/, ""); sub(/\].*/, ""); p = $0; count++; }
+          /stopped=true/ { if (p != "") stopped[p] = 1; }
+          /android\.permission\.USE_FULL_SCREEN_INTENT/ { if (p != "") fsi[p] = 1; }
+          END {
+            if (!count) exit 1;
+            printf "{\"status\":\"ok\",\"stopped\":[";
+            first = 1;
+            for (pkg in stopped) {
+              if (!first) printf ",";
+              printf "\"%s\"", pkg;
+              first = 0;
+            }
+            printf "],\"fsi_capable\":[";
+            first = 1;
+            for (pkg in fsi) {
+              if (!first) printf ",";
+              printf "\"%s\"", pkg;
+              first = 0;
+            }
+            printf "]}\n";
+          }
+        ')
+        if [ $? -eq 0 ] && [ -n "$DUMPSYS_OUT" ]; then
+            echo "$DUMPSYS_OUT"
+        else
+            echo '{"status":"error","message":"Failed to read package status"}'
+        fi
+        ;;
+
+
+
+    save_config)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        
+        # Extract and validate mode
+        NEW_MODE=$(echo "$BODY" | grep -o '"mode":"[^"]*"' | cut -d: -f2 | tr -d '"' | tr '[:lower:]' '[:upper:]')
+        case "$NEW_MODE" in
+            ALL|WHITELIST|BLACKLIST) ;;
+            *) NEW_MODE="ALL" ;;
+        esac
+        
+        # Extract and sanitize package list (only valid package names)
+        PKGS=$(echo "$BODY" | sed -n 's/.*"packages":\[\([^]]*\)\].*/\1/p' | tr ',' '\n' | tr -d '" ' | grep -E '^[a-zA-Z0-9._-]+$')
+
+        # Extract FSI packages
+        FSI_NEW=$(echo "$BODY" | sed -n 's/.*"fsi_packages":\[\([^]]*\)\].*/\1/p' | tr ',' '\n' | tr -d '"  ' | grep -E '^[a-zA-Z0-9._-]+$')
+
+        read_alert_fix_config
+        read_fsi_packages
+
+        # Write to atomic temp file first
+        TMP_CONF="$CONF_FILE.tmp.$$"
+        {
+            echo "# HyperOS FCM Dynamic Wake Filter Configuration"
+            echo "# Modes: MODE=ALL | MODE=WHITELIST | MODE=BLACKLIST"
+            echo "MODE=$NEW_MODE"
+            [ "$ALERT_GROUP_FIX" = "false" ] && echo "GROUP_ALERT_FIX=0" || echo "GROUP_ALERT_FIX=1"
+            [ "$ALERT_ANTI_MUTE_UPDATE" = "false" ] && echo "ANTI_MUTE_UPDATE=0" || echo "ANTI_MUTE_UPDATE=1"
+            [ "$ALERT_UNTHROTTLE_ALERT" = "true" ] && echo "UNTHROTTLE_ALERT=1" || echo "UNTHROTTLE_ALERT=0"
+            if [ -n "$FSI_NEW" ]; then
+                echo "$FSI_NEW" | while read -r _fpkg; do
+                    [ -n "$_fpkg" ] && echo "FSI_PKG=$_fpkg"
+                done
+            fi
+            if [ -n "$PKGS" ]; then
+                echo "$PKGS"
+            fi
+        } > "$TMP_CONF"
+
+        chmod 0644 "$TMP_CONF" 2>/dev/null || true
+        chown system:system "$TMP_CONF" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$TMP_CONF" 2>/dev/null || true
+
+        if ! mv -f "$TMP_CONF" "$CONF_FILE" 2>/dev/null; then
+            rm -f "$TMP_CONF" 2>/dev/null
+            echo '{"status":"error","message":"Failed to save configuration"}'
+            exit 1
+        fi
+        chmod 0644 "$CONF_FILE" 2>/dev/null || true
+        chown system:system "$CONF_FILE" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$CONF_FILE" 2>/dev/null || true
+
+        # Dynamically apply/revoke FSI AppOps
+        _OLD_FSI_SET="$FSI_PKGS"
+        _NEW_FSI_SET="$FSI_NEW"
+
+        # Apply AppOps for newly added FSI packages
+        if [ -n "$_NEW_FSI_SET" ]; then
+            echo "$_NEW_FSI_SET" | while read -r _fpkg; do
+                [ -z "$_fpkg" ] && continue
+                if [ -z "$_OLD_FSI_SET" ] || ! printf '%s\n' "$_OLD_FSI_SET" | grep -Fqx -- "$_fpkg"; then
+                    apply_fsi_appops "$STOCK_CONF" "$_fpkg"
+                fi
+            done
+        fi
+
+        # Revoke AppOps for removed FSI packages
+        if [ -n "$_OLD_FSI_SET" ]; then
+            echo "$_OLD_FSI_SET" | while read -r _fpkg; do
+                [ -z "$_fpkg" ] && continue
+                if [ -z "$_NEW_FSI_SET" ] || ! printf '%s\n' "$_NEW_FSI_SET" | grep -Fqx -- "$_fpkg"; then
+                    restore_fsi_appops "$STOCK_CONF" "$_fpkg"
+                fi
+            done
+        fi
+
+        echo '{"status":"ok","message":"Configuration saved successfully"}'
+        ;;
+
+    set_alert_fix)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        _SET_GRP=$(echo "$BODY" | grep -o '"group_alert_fix":[a-z]*' | cut -d: -f2)
+        _SET_MUTE=$(echo "$BODY" | grep -o '"anti_mute_update":[a-z]*' | cut -d: -f2)
+        _SET_UALT=$(echo "$BODY" | grep -o '"unthrottle_alert":[a-z]*' | cut -d: -f2)
+
+        read_alert_fix_config
+
+        [ "$_SET_GRP" = "true" ] && ALERT_GROUP_FIX=true
+        [ "$_SET_GRP" = "false" ] && ALERT_GROUP_FIX=false
+        [ "$_SET_MUTE" = "true" ] && ALERT_ANTI_MUTE_UPDATE=true
+        [ "$_SET_MUTE" = "false" ] && ALERT_ANTI_MUTE_UPDATE=false
+        [ "$_SET_UALT" = "true" ]  && ALERT_UNTHROTTLE_ALERT=true
+        [ "$_SET_UALT" = "false" ] && ALERT_UNTHROTTLE_ALERT=false
+
+        write_alert_fix_config || true
+
+        printf '{"status":"ok","group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}\n' "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+        ;;
+
+    set_prestart)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        VAL=$(echo "$BODY" | grep -o '"prestart":"[^"]*"' | cut -d: -f2 | tr -d '"')
+        [ "$VAL" = "false" ] && VAL="false" || VAL="true"
+        setprop persist.sys.miui.prestart "$VAL"
+        printf '{"status":"ok","prestart":"%s"}\n' "$VAL"
+        ;;
+
+    repatch_status)
+        if [ -f "$MODDIR/repatch.sh" ]; then
+            STATUS_OUT=$(sh "$MODDIR/repatch.sh" status 2>/dev/null)
+        else
+            STATUS_OUT="state=ok"
+        fi
+        
+        ST_STATE=$(echo "$STATUS_OUT" | grep "^state=" | cut -d= -f2- | tr -d '\r\n')
+        ST_CUR=$(echo "$STATUS_OUT" | grep "^current=" | cut -d= -f2- | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
+        ST_STORED=$(echo "$STATUS_OUT" | grep "^stored=" | cut -d= -f2- | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
+        ST_ACTIVE=$(echo "$STATUS_OUT" | grep "^active=" | cut -d= -f2- | tr -d '\r\n')
+        ST_LAST=$(echo "$STATUS_OUT" | grep "^last=" | cut -d= -f2- | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
+        
+        [ -z "$ST_STATE" ] && ST_STATE="ok"
+        
+        printf '{"status":"ok","state":"%s","current":"%s","stored":"%s","active":"%s","last":"%s"}\n' \
+            "$ST_STATE" "$ST_CUR" "$ST_STORED" "$ST_ACTIVE" "$ST_LAST"
+        ;;
+
+    repatch_run)
+        if [ -f "$MODDIR/repatch.sh" ]; then
+            REPATCH_OUT=$(sh "$MODDIR/repatch.sh" run 2>&1)
+            REPATCH_STATUS=$?
+        else
+            REPATCH_OUT="RESULT=FAIL"
+            REPATCH_STATUS=1
+        fi
+        
+        printf '{"status":"ok","exit_code":%d,"output":"%s"}\n' \
+            "$REPATCH_STATUS" "$(echo "$REPATCH_OUT" | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        ;;
+
+    reboot)
+        ( sleep 1; svc power reboot || reboot ) >/dev/null 2>&1 &
+        echo '{"status":"ok","message":"Rebooting device"}'
+        ;;
+
+    test_push)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        TARGET_PKG=$(echo "$BODY" | grep -o '"package":"[^"]*"' | cut -d: -f2 | tr -d '"')
+        
+        # Strictly validate package name pattern
+        if [ -z "$TARGET_PKG" ] || ! echo "$TARGET_PKG" | grep -Eq '^[a-zA-Z0-9._-]+$'; then
+            echo '{"status":"error","message":"Valid target package required"}'
+            exit 0
+        fi
+
+        # 1. Force-stop the target package first to measure wake from stopped state
+        am force-stop "$TARGET_PKG" 2>/dev/null || true
+        sleep 0.2
+
+        # 2. Fire broadcast WITHOUT --include-stopped-packages flag
+        T_START=$(date +%s%3N 2>/dev/null || date +%s)
+        OUTPUT=$(am broadcast -a com.google.android.c2dm.intent.RECEIVE -p "$TARGET_PKG" 2>&1)
+        T_END=$(date +%s%3N 2>/dev/null || date +%s)
+        DIFF=$((T_END - T_START))
+        [ "$DIFF" -lt 0 ] && DIFF=0
+
+        # 3. Check if target process was woken up
+        sleep 0.3
+        IS_RUNNING=false
+        PID=$(pidof "$TARGET_PKG" 2>/dev/null)
+        [ -n "$PID" ] && IS_RUNNING=true
+
+        printf '{"status":"ok","package":"%s","latency_ms":%d,"running":%s,"woke_from_stopped":%s,"output":"%s"}\n' \
+            "$TARGET_PKG" "$DIFF" "$IS_RUNNING" "$IS_RUNNING" "$(echo "$OUTPUT" | tr '\n' ' ' | sed 's/"/\\"/g')"
+        ;;
+
+    sound_status|get_sound_fix_status)
+        compute_sound_features
+        read_alert_fix_config
+
+        printf '{"status":"ok","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s},"settings":{"rnm_mute":"%s","rnm_seq_time":"%s","rnm_seq_num":"%s","cooldown_en":"%s","cooldown_all":"%s","cooldown_vib":"%s","mute_off_body":"%s"}}\n' \
+            "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT" "$V_RNM_MUTE" "$V_RNM_SEQ_TIME" "$V_RNM_SEQ_NUM" "$V_NOTIF_COOL_EN" "$V_NOTIF_COOL_ALL" "$V_NOTIF_COOL_VIB" "$V_MUTE_OFF_BODY"
+        ;;
+
+    set_sound_feature)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        FEAT=$(echo "$BODY" | grep -o '"feature":"[^"]*"' | cut -d: -f2 | tr -d '"')
+        VAL=$(echo "$BODY" | grep -o '"enabled":[^,}]*' | cut -d: -f2 | tr -d ' "')
+
+        case "$FEAT" in
+            miui_cooldown|android15_cooldown|offbody_mute) ;;
+            *)
+                echo '{"status":"error","message":"Unknown or missing sound feature"}'
+                exit 0
+                ;;
+        esac
+
+        case "$VAL" in
+            true|false) ;;
+            *)
+                echo '{"status":"error","message":"Invalid or missing enabled value"}'
+                exit 0
+                ;;
+        esac
+
+        if [ "$VAL" = "true" ]; then
+            create_sound_backup_if_needed
+        fi
+
+        ERR=0
+        case "$FEAT" in
+            miui_cooldown)
+                if [ "$VAL" = "true" ]; then
+                    put_setting system random_note_mode_mute_time_interval_ms 0 || ERR=1
+                    put_setting system random_note_mode_sequence_time_interval_ms 0 || ERR=1
+                    put_setting system random_note_mode_sequence_sound_number 100 || ERR=1
+                else
+                    restore_setting system random_note_mode_mute_time_interval_ms "$(get_b_val rnm_mute)" || ERR=1
+                    restore_setting system random_note_mode_sequence_time_interval_ms "$(get_b_val rnm_seq_time)" || ERR=1
+                    restore_setting system random_note_mode_sequence_sound_number "$(get_b_val rnm_seq_num)" || ERR=1
+                fi
+                ;;
+            android15_cooldown)
+                if [ "$VAL" = "true" ]; then
+                    put_setting system notification_cooldown_enabled 0 || ERR=1
+                    put_setting global notification_cooldown_enabled 0 || ERR=1
+                    put_setting system notification_cooldown_all 0 || ERR=1
+                    put_setting global notification_cooldown_all 0 || ERR=1
+                    put_setting system notification_cooldown_vibrate_unlocked 0 || ERR=1
+                    put_setting global notification_cooldown_vibrate_unlocked 0 || ERR=1
+                else
+                    restore_setting system notification_cooldown_enabled "$(get_b_val cooldown_en)" || ERR=1
+                    restore_setting global notification_cooldown_enabled "$(get_b_val cooldown_en)" || ERR=1
+                    restore_setting system notification_cooldown_all "$(get_b_val cooldown_all)" || ERR=1
+                    restore_setting global notification_cooldown_all "$(get_b_val cooldown_all)" || ERR=1
+                    restore_setting system notification_cooldown_vibrate_unlocked "$(get_b_val cooldown_vib)" || ERR=1
+                    restore_setting global notification_cooldown_vibrate_unlocked "$(get_b_val cooldown_vib)" || ERR=1
+                fi
+                ;;
+            offbody_mute)
+                if [ "$VAL" = "true" ]; then
+                    put_setting global obtain_mute_when_off_body 0 || ERR=1
+                    put_setting system obtain_mute_when_off_body 0 || ERR=1
+                else
+                    restore_setting global obtain_mute_when_off_body "$(get_b_val mute_off_body)" || ERR=1
+                    restore_setting system obtain_mute_when_off_body "$(get_b_val mute_off_body)" || ERR=1
+                fi
+                ;;
+        esac
+
+        sync_sound_state
+
+        if [ "$ERR" -ne 0 ]; then
+            printf '{"status":"error","message":"Failed to update sound feature","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s}}\n' \
+                "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY"
+            exit 1
+        fi
+
+        printf '{"status":"ok","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s}}\n' \
+            "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY"
+        ;;
+
+    apply_sound_fix)
+        create_sound_backup_if_needed
+
+        ERR=0
+        put_setting system random_note_mode_mute_time_interval_ms 0 || ERR=1
+        put_setting system random_note_mode_sequence_time_interval_ms 0 || ERR=1
+        put_setting system random_note_mode_sequence_sound_number 100 || ERR=1
+        put_setting system notification_cooldown_enabled 0 || ERR=1
+        put_setting global notification_cooldown_enabled 0 || ERR=1
+        put_setting system notification_cooldown_all 0 || ERR=1
+        put_setting global notification_cooldown_all 0 || ERR=1
+        put_setting system notification_cooldown_vibrate_unlocked 0 || ERR=1
+        put_setting global notification_cooldown_vibrate_unlocked 0 || ERR=1
+        put_setting global obtain_mute_when_off_body 0 || ERR=1
+        put_setting system obtain_mute_when_off_body 0 || ERR=1
+
+        ALERT_GROUP_FIX=true
+        ALERT_ANTI_MUTE_UPDATE=true
+        ALERT_UNTHROTTLE_ALERT=true
+        write_alert_fix_config || ERR=1
+
+        sync_sound_state
+        ( sync_notification_channels ) >/dev/null 2>&1 &
+
+        if [ "$ERR" -ne 0 ]; then
+            printf '{"status":"error","message":"Failed to apply all sound anti-mute settings","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}}\n' \
+                "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+            exit 1
+        fi
+
+        printf '{"status":"ok","message":"Sound anti-mute applied successfully","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}}\n' \
+            "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+        ;;
+
+    boot_sync)
+        read_channel_sync_config
+        read_pk_boot_config
+        if [ "$PK_GMS_BOOT" = "true" ]; then
+            disarm_powerkeeper_gms
+        fi
+        if [ "$SYNC_BOOT" = "true" ]; then
+            sync_notification_channels
+            printf '{"status":"ok","message":"Boot channel sync completed","total":%d,"synced":%d}\n' "$_TOTAL_CH" "$_NEW_CH"
+        else
+            printf '{"status":"skipped","message":"Boot channel sync disabled by user"}\n'
+        fi
+        ;;
+
+    sync_channels|run_channel_sync)
+        disarm_powerkeeper_gms
+        sync_notification_channels
+        printf '{"status":"ok","message":"Channels synced successfully","total":%d,"synced":%d}\n' "$_TOTAL_CH" "$_NEW_CH"
+        ;;
+
+    set_pk_gms|toggle_pk_gms)
+        _target="$2"
+        if [ -z "$_target" ] || [ "$_target" = "toggle" ]; then
+            _curr=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+            if [ "$_curr" = "false" ]; then
+                _target="true"
+            else
+                _target="false"
+            fi
+        fi
+        if [ "$_target" = "false" ]; then
+            disarm_powerkeeper_gms
+        else
+            if command -v restore_powerkeeper_state >/dev/null 2>&1 && restore_powerkeeper_state "$STOCK_CONF"; then
+                _target=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
+                  --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+                [ -z "$_target" ] && _target="true"
+            else
+                content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
+                  --method PUT_misc --arg gms_control --extra value:s:true 2>/dev/null
+                _target="true"
+            fi
+        fi
+        printf '{"status":"ok","powerkeeper_gms_control":"%s"}\n' "$_target"
+        ;;
+
+    set_pk_gms_boot)
+        _target="$2"
+        [ "$_target" = "1" ] && _target="true"
+        [ "$_target" = "0" ] && _target="false"
+        if [ "$_target" != "true" ] && [ "$_target" != "false" ]; then
+            _target="true"
+        fi
+
+        _tmp_boot="${PK_BOOT_CONF}.tmp.$$"
+        printf '%s\n' "$_target" > "$_tmp_boot"
+        chmod 0644 "$_tmp_boot" 2>/dev/null || true
+        chown system:system "$_tmp_boot" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$_tmp_boot" 2>/dev/null || true
+
+        if ! mv -f "$_tmp_boot" "$PK_BOOT_CONF" 2>/dev/null; then
+            rm -f "$_tmp_boot" 2>/dev/null
+            printf '{"status":"error","message":"Failed to write boot apply config"}\n'
+            exit 1
+        fi
+        chmod 0644 "$PK_BOOT_CONF" 2>/dev/null || true
+        chown system:system "$PK_BOOT_CONF" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$PK_BOOT_CONF" 2>/dev/null || true
+
+        if [ "$_target" = "true" ]; then
+            _curr=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+            if [ "$_curr" != "false" ]; then
+                disarm_powerkeeper_gms
+            fi
+        fi
+
+        _curr_pk=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+        [ -z "$_curr_pk" ] && _curr_pk="false"
+        printf '{"status":"ok","boot_apply":%s,"powerkeeper_gms_control":"%s"}\n' "$_target" "$_curr_pk"
+        ;;
+
+    get_channel_sync_config)
+        read_channel_sync_config
+        printf '{"status":"ok","auto_sync_boot":%s,"sync_sound":%s,"sync_vibration":%s,"sync_lockscreen":%s,"sync_float":%s}\n' \
+            "$SYNC_BOOT" "$SYNC_SOUND" "$SYNC_VIB" "$SYNC_LOCK" "$SYNC_FLOAT"
+        ;;
+
+    save_channel_sync_config)
+        if [ -n "$2" ]; then
+            BODY="$2"
+        else
+            BODY="$(cat 2>/dev/null)"
+        fi
+        _boot=$(echo "$BODY" | grep -o '"auto_sync_boot":[^,}]*' | cut -d: -f2 | tr -d ' "')
+        [ "$_boot" = "false" ] || _boot="true"
+        _sound=$(echo "$BODY" | grep -o '"sync_sound":[^,}]*' | cut -d: -f2 | tr -d ' "')
+        [ "$_sound" = "false" ] || _sound="true"
+        _vib=$(echo "$BODY" | grep -o '"sync_vibration":[^,}]*' | cut -d: -f2 | tr -d ' "')
+        [ "$_vib" = "false" ] || _vib="true"
+        _lock=$(echo "$BODY" | grep -o '"sync_lockscreen":[^,}]*' | cut -d: -f2 | tr -d ' "')
+        [ "$_lock" = "false" ] || _lock="true"
+        _float=$(echo "$BODY" | grep -o '"sync_float":[^,}]*' | cut -d: -f2 | tr -d ' "')
+        [ "$_float" = "false" ] || _float="true"
+
+        TMP_SYNC="$DATA_DIR/fcm_channel_sync.json.tmp.$$"
+        printf '{"auto_sync_boot":%s,"sync_sound":%s,"sync_vibration":%s,"sync_lockscreen":%s,"sync_float":%s}\n' \
+            "$_boot" "$_sound" "$_vib" "$_lock" "$_float" > "$TMP_SYNC"
+        chmod 0644 "$TMP_SYNC" 2>/dev/null || true
+        chown system:system "$TMP_SYNC" 2>/dev/null || true
+        chcon u:object_r:system_data_file:s0 "$TMP_SYNC" 2>/dev/null || true
+        mv -f "$TMP_SYNC" "$CHANNEL_SYNC_CONF" 2>/dev/null || true
+
+        printf '{"status":"ok","auto_sync_boot":%s,"sync_sound":%s,"sync_vibration":%s,"sync_lockscreen":%s,"sync_float":%s}\n' \
+            "$_boot" "$_sound" "$_vib" "$_lock" "$_float"
+        ;;
+
+    restore_sound_fix)
+        ERR=0
+        if [ -f "$SOUND_BACKUP_FILE" ]; then
+            restore_setting system random_note_mode_mute_time_interval_ms "$(get_b_val rnm_mute)" || ERR=1
+            restore_setting system random_note_mode_sequence_time_interval_ms "$(get_b_val rnm_seq_time)" || ERR=1
+            restore_setting system random_note_mode_sequence_sound_number "$(get_b_val rnm_seq_num)" || ERR=1
+            restore_setting system notification_cooldown_enabled "$(get_b_val cooldown_en)" || ERR=1
+            restore_setting global notification_cooldown_enabled "$(get_b_val cooldown_en)" || ERR=1
+            restore_setting system notification_cooldown_all "$(get_b_val cooldown_all)" || ERR=1
+            restore_setting global notification_cooldown_all "$(get_b_val cooldown_all)" || ERR=1
+            restore_setting system notification_cooldown_vibrate_unlocked "$(get_b_val cooldown_vib)" || ERR=1
+            restore_setting global notification_cooldown_vibrate_unlocked "$(get_b_val cooldown_vib)" || ERR=1
+            restore_setting global obtain_mute_when_off_body "$(get_b_val mute_off_body)" || ERR=1
+            restore_setting system obtain_mute_when_off_body "$(get_b_val mute_off_body)" || ERR=1
+        else
+            restore_setting system random_note_mode_mute_time_interval_ms "" || ERR=1
+            restore_setting system random_note_mode_sequence_time_interval_ms "" || ERR=1
+            restore_setting system random_note_mode_sequence_sound_number "" || ERR=1
+            restore_setting system notification_cooldown_enabled "" || ERR=1
+            restore_setting global notification_cooldown_enabled "" || ERR=1
+            restore_setting system notification_cooldown_all "" || ERR=1
+            restore_setting global notification_cooldown_all "" || ERR=1
+            restore_setting system notification_cooldown_vibrate_unlocked "" || ERR=1
+            restore_setting global notification_cooldown_vibrate_unlocked "" || ERR=1
+            restore_setting global obtain_mute_when_off_body "" || ERR=1
+            restore_setting system obtain_mute_when_off_body "" || ERR=1
+        fi
+
+        ALERT_GROUP_FIX=true
+        ALERT_ANTI_MUTE_UPDATE=true
+        ALERT_UNTHROTTLE_ALERT=false
+        write_alert_fix_config || ERR=1
+
+        sync_sound_state
+
+        if [ "$ERR" -ne 0 ]; then
+            printf '{"status":"error","message":"Failed to restore some stock sound settings","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}}\n' \
+                "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+            exit 1
+        fi
+
+        printf '{"status":"ok","message":"Stock sound settings restored successfully","active":%s,"has_backup":%s,"features":{"miui_cooldown":%s,"android15_cooldown":%s,"offbody_mute":%s},"alert_fix":{"group_alert_fix":%s,"anti_mute_update":%s,"unthrottle_alert":%s}}\n' \
+            "$SOUND_ACTIVE" "$SOUND_BACKUP" "$FEAT_MIUI" "$FEAT_A15" "$FEAT_OFFBODY" "$ALERT_GROUP_FIX" "$ALERT_ANTI_MUTE_UPDATE" "$ALERT_UNTHROTTLE_ALERT"
+        ;;
+
+    event_log)
+        _log="$(logcat -d -t 120 -s OneOneFCM:I 2>/dev/null | tail -n 80)"
+        _json_log="$(printf '%s' "$_log" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN{ORS=""} {if(NR>1)printf "\\n"; printf "%s",$0}')"
+        printf '{"status":"ok","log":"%s"}\n' "$_json_log"
+        ;;
+
+    event_log_clear)
+        logcat -c 2>/dev/null || true
+        printf '{"status":"ok"}\n'
+        ;;
+
+    *)
+        echo '{"status":"error","message":"Unknown or unsupported action"}'
+        ;;
+esac
