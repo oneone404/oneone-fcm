@@ -79,8 +79,8 @@ disarm_powerkeeper_gms() {
 }
 
 read_alert_fix_config() {
-    ALERT_GROUP_FIX=true
-    ALERT_ANTI_MUTE_UPDATE=true
+    ALERT_GROUP_FIX=false
+    ALERT_ANTI_MUTE_UPDATE=false
     ALERT_UNTHROTTLE_ALERT=false
     if [ -f "$CONF_FILE" ]; then
         if grep -qi "^GROUP_ALERT_FIX=0" "$CONF_FILE" || grep -qi "^GROUP_ALERT_FIX=false" "$CONF_FILE"; then
@@ -276,11 +276,11 @@ restore_setting() {
 CHANNEL_SYNC_CONF="$DATA_DIR/fcm_channel_sync.json"
 
 read_channel_sync_config() {
-    SYNC_BOOT="true"
-    SYNC_SOUND="true"
-    SYNC_VIB="true"
-    SYNC_LOCK="true"
-    SYNC_FLOAT="true"
+    SYNC_BOOT="false"
+    SYNC_SOUND="false"
+    SYNC_VIB="false"
+    SYNC_LOCK="false"
+    SYNC_FLOAT="false"
 
     if [ -f "$CHANNEL_SYNC_CONF" ]; then
         _b=$(grep -o '"auto_sync_boot":[^,}]*' "$CHANNEL_SYNC_CONF" 2>/dev/null | cut -d: -f2 | tr -d ' "\r\n')
@@ -444,9 +444,18 @@ sync_notification_channels() {
 # Ensure config file exists with proper permissions
 if [ ! -f "$CONF_FILE" ]; then
     cat <<'EOF' > "$CONF_FILE"
-# HyperOS FCM Dynamic Wake Filter Configuration
-# Modes: MODE=ALL | MODE=WHITELIST | MODE=BLACKLIST
-MODE=ALL
+# OneOne FCM Lite default wake allowlist.
+MODE=WHITELIST
+com.google.android.gm
+com.zing.zalo
+com.facebook.orca
+com.facebook.lite
+com.facebook.katana
+com.instagram.android
+org.telegram.messenger
+com.openai.chatgpt
+mobile.acb.com.vn
+com.mbmobile
 EOF
     chmod 0644 "$CONF_FILE" 2>/dev/null || true
     chown system:system "$CONF_FILE" 2>/dev/null || true

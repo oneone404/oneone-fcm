@@ -574,7 +574,6 @@
         if (!parity) return;
         currentGmsParity = parity;
         const pkBadge = document.getElementById('badgePkGms');
-        const fsiBadge = document.getElementById('badgeVoipFsi');
         const parityBadge = document.getElementById('parityBadge');
 
         const pkCtrl = parity.powerkeeper_gms_control;
@@ -643,15 +642,8 @@
             }
         }
 
-        const isFsiActive = parity.v18_active !== undefined ? !!parity.v18_active : !!(parity.fsi_telegram || parity.fsi_whatsapp);
-        currentV18Active = isFsiActive;
-        if (fsiBadge) {
-            fsiBadge.className = `status-pill ${isFsiActive ? 'status-running' : 'status-stopped'}`;
-            fsiBadge.textContent = isFsiActive ? t('parity.granted') : t('parity.restricted');
-        }
-
         if (parityBadge) {
-            const allParity = (isPkDisarmed || isPkNA) && isFsiActive;
+            const allParity = isPkDisarmed || isPkNA;
             parityBadge.className = `status-pill ${allParity ? 'status-running' : 'status-stopped'}`;
             parityBadge.textContent = allParity ? t('parity.badge.active') : t('parity.badge.partial');
         }

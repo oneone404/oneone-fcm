@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.0
+
+- Add the Lite profile: retain FCM delivery, GMS, PowerKeeper and Greezer handling.
+- Remove boot-time lockscreen/AOD changes and global notification-channel forcing.
+- Default fresh installs to a limited messaging, mail and banking app allowlist.
+
 ## v1.1.4
 
 - Fix upgrades when the active module's framework overlay is still mounted by

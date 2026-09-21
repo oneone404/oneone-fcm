@@ -19,21 +19,9 @@ if [ -f "$MODDIR/repatch_pending" ] && [ -f "$MODDIR/repatch.sh" ]; then
 fi
 
 # ==============================================================================
-# 1. Global Lockscreen & Always-On Display (AOD) Notification Lighting & Wakeup
+# 1. Preserve the stock state required to restore the GMS exemption cleanly.
 # ==============================================================================
 STOCK_CONF="$MODDIR/stock_settings.conf"
-
-SETTINGS_LIST="
-secure:notification_animation_style
-system:wake_up_for_notification
-secure:lock_screen_wake_up_for_notification
-system:wakeup_for_keyguard_notification
-secure:full_screen_aod_notification
-secure:lock_screen_show_notifications
-secure:lock_screen_allow_private_notifications
-system:pref_key_enable_notification_body
-secure:lock_screen_show_only_unseen_notifications
-"
 
 GMS_APPOPS="
 RUN_IN_BACKGROUND
@@ -42,10 +30,9 @@ RUN_ANY_IN_BACKGROUND
 WAKE_LOCK
 "
 
-# First boot: backup stock settings and GMS state if not already recorded. The
-# key check also lets service.sh complete a PowerKeeper-only backup created by
-# an early WebUI request without overwriting it.
-if [ ! -f "$STOCK_CONF" ] || ! grep -q '^secure:notification_animation_style=' "$STOCK_CONF" 2>/dev/null; then
+# First boot: back up only state this Lite module changes. It deliberately does
+# not alter lockscreen, AOD, channel, sound, or prestart preferences.
+if [ ! -f "$STOCK_CONF" ] || ! grep -q '^gms_user_whitelisted=' "$STOCK_CONF" 2>/dev/null; then
     STOCK_TMP="$MODDIR/stock_settings.conf.tmp.$$"
     rm -f "$STOCK_TMP" 2>/dev/null
     if [ -f "$STOCK_CONF" ]; then
@@ -53,15 +40,6 @@ if [ ! -f "$STOCK_CONF" ] || ! grep -q '^secure:notification_animation_style=' "
     else
         : > "$STOCK_TMP"
     fi
-
-    for entry in $SETTINGS_LIST; do
-        [ -z "$entry" ] && continue
-        ns="${entry%%:*}"
-        k="${entry#*:}"
-        val=$(settings get "$ns" "$k" 2>/dev/null | tr -d '\r')
-        [ -z "$val" ] && val="null"
-        echo "${ns}:${k}=${val}" >> "$STOCK_TMP"
-    done
 
     # Backup initial GMS Doze user-whitelist state
     if cmd deviceidle whitelist 2>/dev/null | grep -q "com.google.android.gms"; then
@@ -96,25 +74,6 @@ if command -v ensure_powerkeeper_backup >/dev/null 2>&1; then
         sleep 2
         _pk_retries=$((_pk_retries + 1))
     done
-fi
-
-# Wake screen / Light up screen on notification and notification privacy settings
-# Applied only once on initial module setup to preserve subsequent user modifications
-if [ ! -f "$MODDIR/.defaults_applied" ]; then
-    DEFAULTS_OK=1
-    settings put secure notification_animation_style screen_on 2>/dev/null || DEFAULTS_OK=0
-    settings put system wake_up_for_notification 1 2>/dev/null || DEFAULTS_OK=0
-    settings put secure lock_screen_wake_up_for_notification 1 2>/dev/null || DEFAULTS_OK=0
-    settings put system wakeup_for_keyguard_notification 1 2>/dev/null || DEFAULTS_OK=0
-    settings put secure full_screen_aod_notification 1 2>/dev/null || DEFAULTS_OK=0
-
-    # Show all notifications and their full contents on lock screen (No hidden content):
-    settings put secure lock_screen_show_notifications 1 2>/dev/null || DEFAULTS_OK=0
-    settings put secure lock_screen_allow_private_notifications 1 2>/dev/null || DEFAULTS_OK=0
-    settings put system pref_key_enable_notification_body 1 2>/dev/null || DEFAULTS_OK=0
-    settings put secure lock_screen_show_only_unseen_notifications 0 2>/dev/null || DEFAULTS_OK=0
-
-    [ "$DEFAULTS_OK" -eq 1 ] && touch "$MODDIR/.defaults_applied" 2>/dev/null
 fi
 
 # ==============================================================================
@@ -194,27 +153,24 @@ apply_pk_boot_disarm() {
 }
 
 # ==============================================================================
-# 4. Notification Channel Permission Synchronization
-# ==============================================================================
-# In HyperOS China ROM, unconfigured 3rd-party app channels default to "Don't show"
-# on keyguard and have sound/vibration silenced due to CN whitelist fallback.
-# We delegate startup synchronization directly to the backend exec handler.
-sync_notification_channels() {
-    sleep 5
-    if [ -f "$MODDIR/webroot/cgi-bin/exec" ]; then
-        sh "$MODDIR/webroot/cgi-bin/exec" boot_sync >/dev/null 2>&1
-    fi
-}
-
-# ==============================================================================
-# 5. FCM Wake Filter Configuration & WebUI Permissions
+# 4. FCM Wake Filter Configuration
 # ==============================================================================
 CONF_FILE="/data/system/fcm_wake.conf"
 if [ ! -f "$CONF_FILE" ]; then
     cat <<'EOF' > "$CONF_FILE"
-# HyperOS FCM Dynamic Wake Filter Configuration
-# Modes: MODE=ALL | MODE=WHITELIST | MODE=BLACKLIST
-MODE=ALL
+# OneOne FCM Lite: only known messaging, mail, and financial apps wake by
+# default. Missing packages are ignored; users can adjust the list in WebUI.
+MODE=WHITELIST
+com.google.android.gm
+com.zing.zalo
+com.facebook.orca
+com.facebook.lite
+com.facebook.katana
+com.instagram.android
+org.telegram.messenger
+com.openai.chatgpt
+mobile.acb.com.vn
+com.mbmobile
 EOF
 fi
 chmod 0644 "$CONF_FILE" 2>/dev/null
@@ -223,30 +179,5 @@ chcon u:object_r:system_data_file:s0 "$CONF_FILE" 2>/dev/null
 
 [ -f "$MODDIR/webroot/cgi-bin/exec" ] && chmod 0755 "$MODDIR/webroot/cgi-bin/exec" 2>/dev/null
 
-# ==============================================================================
-# 6. Per-App VoIP FullScreen Intent AppOps
-# ==============================================================================
-# There is deliberately no boot-time re-grant here.
-#
-# The FSI ops are granted once, when a package is added in the WebUI, and given
-# back when it is removed. They are not re-applied on boot, for two reasons.
-#
-# They do not need it: on HyperOS 3 CN they are ordinary AppOps records in
-# /data/system/appops.xml. Set to deny for a package, reboot, and they read deny
-# still - measured on OS3.0.307.0.WNVCNXM.C11.
-#
-# And a boot pass cannot be made correct even if some platform did drop them. A
-# reverted op and an op the user set by hand are the same value; nothing in
-# AppOps says which happened. Any rule for re-granting therefore overwrites some
-# deliberate choice - including the case where the user restores exactly the
-# mode the module recorded. Better to leave the ops alone than to guess on every
-# boot.
-#
-# If a ROM is found that really does drop them, this belongs back here with that
-# device's evidence, and with a signal that distinguishes a reset from a user
-# change rather than a heuristic over the mode.
-
-# Run PowerKeeper boot disarm and channel sync asynchronously on boot completion
+# Run the PowerKeeper disarm asynchronously after boot completion.
 apply_pk_boot_disarm &
-sync_notification_channels &
-

@@ -1,6 +1,11 @@
 # OneOne FCM
 
-OneOne FCM is a ReSukiSU / KernelSU module for Xiaomi 17 Pro on HyperOS China firmware. It provides FCM wake handling and notification tuning without replacing the ROM or kernel.
+OneOne FCM is a ReSukiSU / KernelSU module for Xiaomi 17 Pro on HyperOS China firmware. It keeps FCM delivery working without replacing the ROM or kernel.
+
+The Lite profile keeps only the parts required for delivery: the FCM wake filter,
+Google Play services exemption, and the China-ROM PowerKeeper/Greezer handling.
+It does not force lockscreen/AOD settings, notification-channel permissions,
+sound behavior, FullScreen Intent, or MIUI prestart settings.
 
 ## Install
 
