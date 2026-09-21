@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.2
+
+- Move the canonical project URL to oneone404/oneone-fcm.
+- Point the online update manifest to the canonical repository.
+
 ## v1.1.1
 
 - Refined WebUI Material 3 surfaces, controls and bottom navigation.
