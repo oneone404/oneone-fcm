@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.3
+
+- Hide visual scrollbars while preserving touch scrolling throughout WebUI.
+
 ## v1.2.2
 
 - Remove the VoIP FullScreen Intent feature and its per-app configuration path.
