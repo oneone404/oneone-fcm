@@ -1077,15 +1077,11 @@
     let currentMode = null;
     let savedMode = null;
     let hasLoadedStoppedStatus = false;
-    let hasLoadedFsiCapable = false;
     let viewFilter = 'ALL'; // 'ALL' | 'ENABLED' | 'DISABLED' | 'ACTIVE' | 'STOPPED'
     let installedApps = [];
     let stoppedApps = new Set();
     let selectedApps = new Set();
     let savedApps = new Set();
-    let fsiApps = new Set();
-    let savedFsiApps = new Set();
-    let fsiCapableApps = new Set();
 
     function checkDraftChanges() {
         let isDirty = false;
@@ -1098,20 +1094,6 @@
                 if (!savedApps.has(app)) {
                     isDirty = true;
                     break;
-                }
-            }
-        }
-
-        // Check FSI changes
-        if (!isDirty) {
-            if (fsiApps.size !== savedFsiApps.size) {
-                isDirty = true;
-            } else {
-                for (const app of fsiApps) {
-                    if (!savedFsiApps.has(app)) {
-                        isDirty = true;
-                        break;
-                    }
                 }
             }
         }
@@ -1135,8 +1117,6 @@
             const state = {
                 mode: savedMode,
                 packages: Array.from(savedApps),
-                fsi_packages: Array.from(savedFsiApps),
-                fsi_capable: Array.from(fsiCapableApps),
                 installed: installedApps,
                 stopped: Array.from(stoppedApps),
                 sound_active: soundFixActive,
@@ -1165,14 +1145,6 @@
             if (Array.isArray(cache.packages)) {
                 savedApps = new Set(cache.packages);
                 selectedApps = new Set(cache.packages);
-            }
-            if (Array.isArray(cache.fsi_packages)) {
-                savedFsiApps = new Set(cache.fsi_packages);
-                fsiApps = new Set(cache.fsi_packages);
-            }
-            if (Array.isArray(cache.fsi_capable) && cache.fsi_capable.length) {
-                fsiCapableApps = new Set(cache.fsi_capable);
-                hasLoadedFsiCapable = true;
             }
             if (Array.isArray(cache.installed) && cache.installed.length) {
                 installedApps = cache.installed;
@@ -1283,13 +1255,6 @@
             if (data.gms_parity) {
                 updateGmsParityUI(data.gms_parity);
             }
-            if (Array.isArray(data.fsi_packages)) {
-                savedFsiApps = new Set(data.fsi_packages);
-                fsiApps = new Set(data.fsi_packages);
-                for (const pkg of fsiApps) {
-                    fsiCapableApps.add(pkg);
-                }
-            }
             filterApps();
             checkDraftChanges();
             saveStateCache();
@@ -1314,25 +1279,15 @@
                     stoppedApps = new Set(res.data.stopped);
                     hasLoadedStoppedStatus = true;
                 }
-                if (Array.isArray(res.data.fsi_capable)) {
-                    fsiCapableApps = new Set(res.data.fsi_capable);
-                    for (const pkg of fsiApps) {
-                        fsiCapableApps.add(pkg);
-                    }
-                    hasLoadedFsiCapable = true;
-                }
                 updateCounts();
                 updateStoppedBadgesInDOM();
-                updateFsiButtonsInDOM();
                 saveStateCache();
             }
         } catch (e) {
             console.warn('Background stopped state fetch skipped:', e);
             hasLoadedStoppedStatus = true;
-            hasLoadedFsiCapable = true;
             updateCounts();
             updateStoppedBadgesInDOM();
-            updateFsiButtonsInDOM();
         }
     }
 
@@ -1343,36 +1298,6 @@
             const isStopped = stoppedApps.has(pkg);
             badge.className = `status-pill ${isStopped ? 'status-stopped' : 'status-running'}`;
             badge.textContent = isStopped ? t('pill.stopped') : t('pill.active');
-        });
-    }
-
-    function updateFsiButtonsInDOM() {
-        document.querySelectorAll('.app-item').forEach(item => {
-            const pkg = item.getAttribute('data-pkg');
-            if (!pkg) return;
-            const actions = item.querySelector('.app-actions');
-            if (!actions) return;
-            let btn = actions.querySelector(`.fsi-btn[data-fsi-pkg="${CSS.escape(pkg)}"]`);
-            const canFsi = fsiCapableApps.has(pkg) || fsiApps.has(pkg);
-            if (canFsi) {
-                const isFsi = fsiApps.has(pkg);
-                if (!btn) {
-                    const switchEl = actions.querySelector('.switch');
-                    const fsiTitle = fsiTitleFor(isFsi);
-                    const tmp = document.createElement('div');
-                    tmp.innerHTML = `<button class="fsi-btn ${isFsi ? 'fsi-active' : ''}" data-fsi-pkg="${pkg}" title="${fsiTitle}" onclick="toggleFsi('${pkg}', event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg></button>`;
-                    if (switchEl) {
-                        actions.insertBefore(tmp.firstElementChild, switchEl);
-                    } else {
-                        actions.appendChild(tmp.firstElementChild);
-                    }
-                } else {
-                    btn.classList.toggle('fsi-active', isFsi);
-                    btn.title = fsiTitleFor(isFsi);
-                }
-            } else if (btn) {
-                btn.remove();
-            }
         });
     }
 
@@ -1544,14 +1469,6 @@
             ? `<span class="status-pill ${isStopped ? 'status-stopped' : 'status-running'}" data-badge-pkg="${pkg}">${isStopped ? t('pill.stopped') : t('pill.active')}</span>`
             : `<span class="status-pill status-running" data-badge-pkg="${pkg}"><span class="skeleton skeleton-text" style="width: 36px; height: 10px;"></span></span>`;
 
-        const canFsi = fsiCapableApps.has(pkg) || fsiApps.has(pkg);
-        let fsiBtnHtml = '';
-        if (canFsi) {
-            const isFsi = fsiApps.has(pkg);
-            const fsiTitle = fsiTitleFor(isFsi);
-            fsiBtnHtml = `<button class="fsi-btn ${isFsi ? 'fsi-active' : ''}" data-fsi-pkg="${pkg}" title="${fsiTitle}" onclick="toggleFsi('${pkg}', event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg></button>`;
-        }
-
         return `
             <div class="app-item ${isChecked ? 'selected' : ''}" data-pkg="${pkg}">
                 <div class="app-pkg-container" onclick="copyPkg(event, '${pkg}')" title="Tap to copy package name">
@@ -1564,7 +1481,6 @@
                 </div>
                 <div class="app-actions">
                     ${badgeHtml}
-                    ${fsiBtnHtml}
                     <label class="switch" onclick="event.stopPropagation()">
                         <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleApp('${pkg}', this.checked)">
                         <span class="slider ${sliderClass}"></span>
@@ -1671,40 +1587,6 @@
 
         updateCounts();
         checkDraftChanges();
-    }
-
-    // The tooltip names the permissions the toggle grants, so that switching an
-    // app on is not a silent change to three per-app settings the user can also
-    // see in Settings. fsi.btn.perms falls back to English when a translation
-    // has not caught up.
-    function fsiTitleFor(isActive) {
-        return (isActive ? t('fsi.btn.active') : t('fsi.btn.hint')) + '\n' + t('fsi.btn.perms');
-    }
-
-    function toggleFsi(pkg, event) {
-        if (event) event.stopPropagation();
-        const wasActive = fsiApps.has(pkg);
-        if (wasActive) {
-            fsiApps.delete(pkg);
-        } else {
-            fsiApps.add(pkg);
-            fsiCapableApps.add(pkg);
-        }
-        const isActive = !wasActive;
-
-        // Update the button in DOM
-        const btn = document.querySelector(`.fsi-btn[data-fsi-pkg="${CSS.escape(pkg)}"]`);
-        if (btn) {
-            btn.classList.toggle('fsi-active', isActive);
-            btn.title = fsiTitleFor(isActive);
-        }
-
-        checkDraftChanges();
-
-        // The permission list rides on the toast, not only on the tooltip: the
-        // WebUI is used from the phone, where a title attribute never appears.
-        showToast(t(isActive ? 'fsi.toast.enabled' : 'fsi.toast.disabled', { pkg })
-                  + ' ' + t(isActive ? 'fsi.btn.perms' : 'fsi.toast.restored'));
     }
 
     function copyPkg(event, pkg) {
@@ -1840,14 +1722,12 @@
         try {
             const payload = {
                 mode: currentMode,
-                packages: Array.from(selectedApps),
-                fsi_packages: Array.from(fsiApps)
+                packages: Array.from(selectedApps)
             };
             const res = await execAction('save_config', payload);
             if (res.success) {
                 savedMode = currentMode;
                 savedApps = new Set(selectedApps);
-                savedFsiApps = new Set(fsiApps);
                 checkDraftChanges();
                 saveStateCache();
                 showToast(t('toast.saved'));

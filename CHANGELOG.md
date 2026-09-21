@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.2
+
+- Remove the VoIP FullScreen Intent feature and its per-app configuration path.
+- Simplify the app list by removing preset, import, export, select-all and clear actions.
+
 ## v1.2.1
 
 - Add a one-tap action to restore the OneOne Lite whitelist and core FCM settings.

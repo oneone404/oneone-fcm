@@ -1,7 +1,7 @@
 id=oneone_fcm
 name=OneOne FCM - Pandora
-version=v1.2.1
-versionCode=121
+version=v1.2.2
+versionCode=122
 author=OneOne
 description=Lite FCM delivery for Xiaomi 17 Pro (pandora).
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json

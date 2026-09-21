@@ -130,15 +130,6 @@
             <span id="selectedCount" class="status-pill status-stopped"><span class="skeleton skeleton-text" style="width: 52px; height: 10px;"></span></span>
         </div>
 
-        <!-- Clean Essential Action Bar -->
-        <div class="action-row">
-            <button class="btn btn-recommend" onclick="selectRecommended()" data-i18n="act.recommended">⭐ Recommended</button>
-            <button class="btn btn-accent" onclick="openImportModal()" data-i18n="act.import">📥 Import</button>
-            <button class="btn btn-accent" onclick="exportToClipboard()" data-i18n="act.export">📋 Export</button>
-            <button class="btn" onclick="selectAll(true)" data-i18n="act.selectAll">Select All</button>
-            <button class="btn" onclick="selectAll(false)" data-i18n="act.clear">Clear</button>
-        </div>
-
         <!-- View Filter Tabs: All / Enabled / Disabled / Active / Stopped -->
         <div class="filter-tabs">
             <button class="filter-tab active" id="tabFilterAll" onclick="setViewFilter('ALL')"><span data-i18n="tab.all">All</span> (<span id="countAll">&minus;</span>)</button>
@@ -447,13 +438,6 @@
                 </div>
             </div>
 
-            <div class="sound-row" hidden>
-                <div class="sound-info">
-                    <div class="sound-name" data-i18n="parity.feat.fsi">VoIP FullScreen Intent</div>
-                    <div class="sound-hint" data-i18n="parity.feat.fsi.hint">Preserves incoming call answer/decline screens when locked</div>
-                </div>
-                <span class="status-pill status-running" id="badgeVoipFsi"><span class="skeleton skeleton-text" style="width: 52px; height: 11px;"></span></span>
-            </div>
         </div>
     </div>
     </div>
