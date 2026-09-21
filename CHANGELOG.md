@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.3
+
+- Simplify the public project title and release asset name to OneOne FCM.
+
 ## v1.1.2
 
 - Move the canonical project URL to oneone404/oneone-fcm.

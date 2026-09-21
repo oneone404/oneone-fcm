@@ -1,10 +1,10 @@
-# OneOne FCM - Pandora
+# OneOne FCM
 
-OneOne FCM is a ReSukiSU / KernelSU module for Xiaomi 17 Pro (pandora) on HyperOS China firmware. It provides FCM wake handling and notification tuning without replacing the ROM or kernel.
+OneOne FCM is a ReSukiSU / KernelSU module for Xiaomi 17 Pro on HyperOS China firmware. It provides FCM wake handling and notification tuning without replacing the ROM or kernel.
 
 ## Install
 
-1. Download the latest OneOne-FCM-Pandora ZIP from [Releases](../../releases).
+1. Download the latest OneOne FCM ZIP from [Releases](../../releases).
 2. Open ReSukiSU, then Modules, then install from storage.
 3. Select the ZIP, let the installer finish, then reboot when it asks.
 4. Open the module WebUI and choose the wake policy and app list.
