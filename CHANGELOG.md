@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.4
+
+- Fix upgrades when the active module's framework overlay is still mounted by
+  reusing its verified stock framework stash before re-patching.
+
 ## v1.1.3
 
 - Simplify the public project title and release asset name to OneOne FCM.

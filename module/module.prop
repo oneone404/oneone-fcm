@@ -1,7 +1,7 @@
 id=oneone_fcm
 name=OneOne FCM - Pandora
-version=v1.1.3
-versionCode=113
+version=v1.1.4
+versionCode=114
 author=OneOne
 description=FCM wake and notification tuning for Xiaomi 17 Pro (pandora).
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json

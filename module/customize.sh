@@ -110,14 +110,20 @@ MIUI_SERVICES_STOCK="$(live_miui_services)"
 
 SERVICES_SHA256="$(sha256sum "$SERVICES_STOCK" 2>/dev/null | awk '{print $1}')"
 MIUI_SERVICES_SHA256="$(sha256sum "$MIUI_SERVICES_STOCK" 2>/dev/null | awk '{print $1}')"
-# v1.0 -> v1.1 changed the module ID. During this one-time migration the live
-# paths are still the old module's patched mounts, so validate and patch from
-# its firmware-locked pristine stash instead.
+# An upgrade runs while the currently enabled module still overlays both live
+# framework jars. Prefer its preserved, firmware-locked stock copies instead.
+# This covers both upgrades from the original module ID and normal oneone_fcm
+# updates, before the modules -> modules_update swap carries the stash forward.
+if [ -d /data/adb/modules/oneone_fcm ]; then
+    _migration_dir=/data/adb/modules/oneone_fcm
+else
+    _migration_dir=/data/adb/modules/fcm_notification_fix
+fi
 if { [ "$SERVICES_SHA256" != "$EXPECTED_SERVICES_SHA256" ] || [ "$MIUI_SERVICES_SHA256" != "$EXPECTED_MIUI_SERVICES_SHA256" ]; } \
-   && [ -f /data/adb/modules/fcm_notification_fix/stock/services.jar ] \
-   && [ -f /data/adb/modules/fcm_notification_fix/stock/miui-services.jar ]; then
-    _migration_services=/data/adb/modules/fcm_notification_fix/stock/services.jar
-    _migration_miui=/data/adb/modules/fcm_notification_fix/stock/miui-services.jar
+   && [ -f "$_migration_dir/stock/services.jar" ] \
+   && [ -f "$_migration_dir/stock/miui-services.jar" ]; then
+    _migration_services="$_migration_dir/stock/services.jar"
+    _migration_miui="$_migration_dir/stock/miui-services.jar"
     _migration_services_hash="$(sha256sum "$_migration_services" 2>/dev/null | awk '{print $1}')"
     _migration_miui_hash="$(sha256sum "$_migration_miui" 2>/dev/null | awk '{print $1}')"
     if [ "$_migration_services_hash" = "$EXPECTED_SERVICES_SHA256" ] \
@@ -126,7 +132,7 @@ if { [ "$SERVICES_SHA256" != "$EXPECTED_SERVICES_SHA256" ] || [ "$MIUI_SERVICES_
         MIUI_SERVICES_STOCK="$_migration_miui"
         SERVICES_SHA256="$_migration_services_hash"
         MIUI_SERVICES_SHA256="$_migration_miui_hash"
-        ui_print "- Migrating from v1.0 stock framework stash"
+        ui_print "- Reusing the verified stock framework stash from the installed module"
     fi
 fi
 [ "$SERVICES_SHA256" = "$EXPECTED_SERVICES_SHA256" ] || abort_install "services.jar hash mismatch; refusing to patch."
