@@ -143,8 +143,6 @@
         if (DICT[code]) {
             applyI18n();
             updateModeUI();
-            updateSoundFixUI();
-            updateChannelSyncUI();
             if (currentGmsParity) updateGmsParityUI(currentGmsParity);
             if (romState) renderRomStatus();
             if (installedApps.length) filterApps();
@@ -152,8 +150,6 @@
         await loadDict(code);
         applyI18n();
         updateModeUI();
-        updateSoundFixUI();
-        updateChannelSyncUI();
         if (currentGmsParity) updateGmsParityUI(currentGmsParity);
         if (installedApps.length) filterApps(); else loadStatus();
         renderRomStatus();
@@ -242,11 +238,7 @@
 
         window.scrollTo({ top: 0, behavior: 'instant' });
 
-        if (tabId === 'apps') {
-            filterApps();
-        } else if (tabId === 'settings') {
-            refreshEventLog();
-        }
+        if (tabId === 'apps') filterApps();
     }
 
     function initTab() {
@@ -354,215 +346,6 @@
         }
         btn.disabled = false;
         refreshRomStatus();
-    }
-
-    /* =========================================================================
-     * Notification Sound Anti-Mute & Backup Controller
-     * ====================================================================== */
-    let soundFeatures = {
-        miui_cooldown: false,
-        android15_cooldown: false,
-        offbody_mute: false
-    };
-    let soundFixHasBackup = false;
-    let soundFixActive = false;
-
-    function updateSoundFixUI(active, hasBackup, features) {
-        if (active !== undefined) soundFixActive = !!active;
-        if (hasBackup !== undefined) soundFixHasBackup = !!hasBackup;
-        if (features) {
-            soundFeatures = Object.assign(soundFeatures, features);
-        }
-
-        const swMiui = document.getElementById('switchMiuiCooldown');
-        const swA15 = document.getElementById('switchA15Cooldown');
-        const swOffbody = document.getElementById('switchOffbody');
-        const badge = document.getElementById('soundBadge');
-        const btnApply = document.getElementById('btnApplySound');
-        const btnRestore = document.getElementById('btnRestoreSound');
-
-        if (swMiui) swMiui.checked = !!soundFeatures.miui_cooldown;
-        if (swA15) swA15.checked = !!soundFeatures.android15_cooldown;
-        if (swOffbody) swOffbody.checked = !!soundFeatures.offbody_mute;
-
-        const countActive = (soundFeatures.miui_cooldown ? 1 : 0) +
-                            (soundFeatures.android15_cooldown ? 1 : 0) +
-                            (soundFeatures.offbody_mute ? 1 : 0) +
-                            (alertFixConfig.group_alert_fix ? 1 : 0) +
-                            (alertFixConfig.anti_mute_update ? 1 : 0) +
-                            (alertFixConfig.unthrottle_alert ? 1 : 0);
-
-        if (badge) {
-            if (countActive === 6) {
-                badge.className = 'status-pill status-running';
-                badge.textContent = t('sound.badge.active');
-            } else if (countActive > 0) {
-                badge.className = 'status-pill status-running';
-                badge.textContent = t('sound.badge.custom') + ` (${countActive}/6)`;
-            } else {
-                badge.className = 'status-pill status-stopped';
-                badge.textContent = t('sound.badge.stock');
-            }
-        }
-
-        if (btnApply) {
-            btnApply.style.opacity = (countActive === 6) ? '0.75' : '1';
-        }
-        if (btnRestore) {
-            btnRestore.style.display = (countActive > 0 || soundFixHasBackup) ? 'inline-flex' : 'none';
-        }
-    }
-
-    async function loadSoundFixStatus() {
-        try {
-            const res = await execAction('get_sound_fix_status');
-            if (res && res.success && res.data) {
-                updateSoundFixUI(res.data.active, res.data.has_backup, res.data.features);
-                if (res.data.alert_fix) {
-                    updateAlertFixUI(res.data.alert_fix);
-                }
-                saveStateCache();
-            }
-        } catch (e) {
-            console.warn('Failed to load sound fix status:', e);
-        }
-    }
-
-    function showSwitchToast(title, isEnabled) {
-        const statusText = isEnabled ? t('toast.status.enabled') : t('toast.status.disabled');
-        showToast(`${title}: ${statusText}`);
-    }
-
-    async function toggleSoundFeature(featureName, isEnabled) {
-        try {
-            const res = await execAction('set_sound_feature', { feature: featureName, enabled: isEnabled });
-            if (res && res.success && res.data) {
-                updateSoundFixUI(res.data.active, res.data.has_backup ?? true, res.data.features);
-                saveStateCache();
-                const soundTitles = {
-                    'miui_cooldown': t('sound.feat.miui_cooldown'),
-                    'android15_cooldown': t('sound.feat.android15_cooldown'),
-                    'offbody_mute': t('sound.feat.offbody')
-                };
-                showSwitchToast(soundTitles[featureName] || featureName, isEnabled);
-            } else {
-                showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Unknown error'));
-                loadStatus();
-            }
-        } catch (e) {
-            showToast(t('alert.saveError') + e.message);
-            loadStatus();
-        }
-    }
-
-    async function applySoundFix() {
-        const btn = document.getElementById('btnApplySound');
-        if (btn) {
-            btn.disabled = true;
-            btn.style.opacity = '0.7';
-            btn.innerHTML = '<span class="spinner-small" style="width: 13px; height: 13px; margin-right: 6px; border-top-color: currentColor;"></span>' + t('sound.btn.apply');
-        }
-        await new Promise(r => setTimeout(r, 40));
-        try {
-            const res = await execAction('apply_sound_fix');
-            if (res && res.success) {
-                showToast(t('sound.toast.applied'));
-                if (res.data) {
-                    updateSoundFixUI(res.data.active, true, res.data.features || {
-                        miui_cooldown: true,
-                        android15_cooldown: true,
-                        offbody_mute: true
-                    });
-                    updateAlertFixUI(res.data.alert_fix || {
-                        group_alert_fix: true,
-                        anti_mute_update: true,
-                        unthrottle_alert: true
-                    });
-                    saveStateCache();
-                } else {
-                    loadStatus();
-                }
-            } else {
-                showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Unknown error'));
-                loadStatus();
-            }
-        } catch (e) {
-            showToast(t('alert.saveError') + e.message);
-            loadStatus();
-        } finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.innerHTML = t('sound.btn.apply');
-            }
-        }
-    }
-
-    async function restoreSoundFix() {
-        const btn = document.getElementById('btnRestoreSound');
-        if (btn) {
-            btn.disabled = true;
-            btn.style.opacity = '0.7';
-            btn.innerHTML = '<span class="spinner-small" style="width: 13px; height: 13px; margin-right: 6px; border-top-color: currentColor;"></span>' + t('sound.btn.restore');
-        }
-        await new Promise(r => setTimeout(r, 40));
-        try {
-            const res = await execAction('restore_sound_fix');
-            if (res && res.success) {
-                showToast(t('sound.toast.restored'));
-                if (res.data) {
-                    updateSoundFixUI(res.data.active, res.data.has_backup ?? false, res.data.features || {
-                        miui_cooldown: false,
-                        android15_cooldown: false,
-                        offbody_mute: false
-                    });
-                    updateAlertFixUI(res.data.alert_fix || {
-                        group_alert_fix: true,
-                        anti_mute_update: true,
-                        unthrottle_alert: false
-                    });
-                    saveStateCache();
-                } else {
-                    loadStatus();
-                }
-            } else {
-                showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Unknown error'));
-                loadStatus();
-            }
-        } catch (e) {
-            showToast(t('alert.saveError') + e.message);
-            loadStatus();
-        } finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.innerHTML = t('sound.btn.restore');
-            }
-        }
-    }
-
-    /* =========================================================================
-     * Group Alert & Vibration Throttle Runtime Controls
-     * ====================================================================== */
-    let alertFixConfig = {
-        group_alert_fix: true,
-        anti_mute_update: true,
-        unthrottle_alert: false
-    };
-    let alertFixSaveInProgress = false;
-    let alertFixSavePending = false;
-
-    function updateAlertFixUI(config) {
-        if (config) {
-            alertFixConfig = Object.assign(alertFixConfig, config);
-        }
-        const swGroup = document.getElementById('switchGroupAlertFix');
-        const swAntiMute = document.getElementById('switchAntiMuteUpdate');
-        const swUnthrottleAlert = document.getElementById('switchUnthrottleAlert');
-        if (swGroup) swGroup.checked = !!alertFixConfig.group_alert_fix;
-        if (swAntiMute) swAntiMute.checked = !!alertFixConfig.anti_mute_update;
-        if (swUnthrottleAlert) swUnthrottleAlert.checked = !!alertFixConfig.unthrottle_alert;
-        updateSoundFixUI();
     }
 
     let currentPkCtrl = 'unknown';
@@ -772,188 +555,6 @@
         }
     }
 
-    async function toggleAlertFix(feature, isEnabled) {
-        alertFixConfig[feature] = isEnabled;
-        alertFixSavePending = true;
-        if (alertFixSaveInProgress) return;
-
-        alertFixSaveInProgress = true;
-        try {
-            while (alertFixSavePending) {
-                alertFixSavePending = false;
-                const requestedConfig = Object.assign({}, alertFixConfig);
-                const res = await execAction('set_alert_fix', requestedConfig);
-
-                if (!res || !res.success) {
-                    if (!alertFixSavePending) {
-                        showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Unknown error'));
-                        await loadStatus();
-                    }
-                    continue;
-                }
-
-                if (!alertFixSavePending) {
-                    updateAlertFixUI(res.data || requestedConfig);
-                    saveStateCache();
-                    const alertTitles = {
-                        'anti_mute_update': t('sound.feat.anti_mute_update'),
-                        'group_alert_fix': t('sound.feat.group_alert'),
-                        'unthrottle_alert': t('sound.feat.unthrottle_alert')
-                    };
-                    showSwitchToast(alertTitles[feature] || feature, isEnabled);
-                }
-            }
-        } catch (e) {
-            alertFixSavePending = false;
-            showToast(t('alert.saveError') + e.message);
-        } finally {
-            alertFixSaveInProgress = false;
-        }
-    }
-
-    /* =========================================================================
-     * Channel Permission Sync
-     * ====================================================================== */
-    let channelSyncConfig = {
-        auto_sync_boot: true,
-        sync_sound: true,
-        sync_vibration: true,
-        sync_lockscreen: true,
-        sync_float: true
-    };
-    let channelSyncSaveInProgress = false;
-    let channelSyncSavePending = false;
-
-    function updateChannelSyncUI(config) {
-        if (config) {
-            channelSyncConfig = Object.assign(channelSyncConfig, config);
-        }
-
-        const swBoot = document.getElementById('switchSyncBoot');
-        const swSound = document.getElementById('switchSyncSound');
-        const swVib = document.getElementById('switchSyncVib');
-        const swLock = document.getElementById('switchSyncLock');
-        const swFloat = document.getElementById('switchSyncFloat');
-        const badge = document.getElementById('syncBadge');
-
-        if (swBoot) swBoot.checked = !!channelSyncConfig.auto_sync_boot;
-        if (swSound) swSound.checked = !!channelSyncConfig.sync_sound;
-        if (swVib) swVib.checked = !!channelSyncConfig.sync_vibration;
-        if (swLock) swLock.checked = !!channelSyncConfig.sync_lockscreen;
-        if (swFloat) swFloat.checked = !!channelSyncConfig.sync_float;
-
-        if (badge) {
-            if (channelSyncConfig.auto_sync_boot) {
-                badge.className = 'status-pill status-running';
-                badge.textContent = t('sync.badge.auto');
-            } else {
-                badge.className = 'status-pill status-stopped';
-                badge.textContent = t('sync.badge.manual');
-            }
-        }
-    }
-
-    async function loadChannelSyncConfig() {
-        try {
-            const res = await execAction('get_channel_sync_config');
-            if (res && res.success && res.data) {
-                updateChannelSyncUI(res.data);
-                saveStateCache();
-            }
-        } catch (e) {
-            console.warn('Failed to load channel sync config:', e);
-        }
-    }
-
-    async function updateChannelSyncConfig(changedFeature, isEnabled) {
-        channelSyncSavePending = true;
-        if (channelSyncSaveInProgress) return;
-
-        channelSyncSaveInProgress = true;
-        try {
-            while (channelSyncSavePending) {
-                channelSyncSavePending = false;
-
-                const swBoot = document.getElementById('switchSyncBoot');
-                const swSound = document.getElementById('switchSyncSound');
-                const swVib = document.getElementById('switchSyncVib');
-                const swLock = document.getElementById('switchSyncLock');
-                const swFloat = document.getElementById('switchSyncFloat');
-                const newConfig = {
-                    auto_sync_boot: swBoot ? swBoot.checked : channelSyncConfig.auto_sync_boot,
-                    sync_sound: swSound ? swSound.checked : channelSyncConfig.sync_sound,
-                    sync_vibration: swVib ? swVib.checked : channelSyncConfig.sync_vibration,
-                    sync_lockscreen: swLock ? swLock.checked : channelSyncConfig.sync_lockscreen,
-                    sync_float: swFloat ? swFloat.checked : channelSyncConfig.sync_float
-                };
-
-                const res = await execAction('save_channel_sync_config', newConfig);
-                if (!res || !res.success) {
-                    channelSyncSavePending = false;
-                    updateChannelSyncUI(channelSyncConfig);
-                    showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Unknown error'));
-                    return;
-                }
-
-                channelSyncConfig = Object.assign(channelSyncConfig, res.data || newConfig);
-                if (!channelSyncSavePending) {
-                    updateChannelSyncUI(channelSyncConfig);
-                    saveStateCache();
-                    if (changedFeature) {
-                        const syncTitles = {
-                            'auto_sync_boot': t('sync.feat.boot'),
-                            'sync_sound': t('sync.feat.sound'),
-                            'sync_vibration': t('sync.feat.vibration'),
-                            'sync_lockscreen': t('sync.feat.lockscreen'),
-                            'sync_float': t('sync.feat.float')
-                        };
-                        showSwitchToast(syncTitles[changedFeature] || changedFeature, isEnabled);
-                    } else {
-                        showToast(t('sync.toast.saved'));
-                    }
-                }
-            }
-        } catch (e) {
-            channelSyncSavePending = false;
-            updateChannelSyncUI(channelSyncConfig);
-            showToast(t('alert.saveError') + e.message);
-        } finally {
-            channelSyncSaveInProgress = false;
-        }
-    }
-
-    async function triggerChannelSync() {
-        const btn = document.getElementById('btnRunSync');
-        if (btn) {
-            btn.disabled = true;
-            btn.style.opacity = '0.7';
-            btn.innerHTML = '<span class="spinner-small" style="width: 13px; height: 13px; margin-right: 6px; border-top-color: currentColor;"></span>' + (t('sync.toast.started') || 'Syncing Channels…');
-        }
-        await new Promise(r => setTimeout(r, 40));
-        try {
-            const res = await execAction('run_channel_sync');
-            if (res && res.success) {
-                const total = (res.data && res.data.total !== undefined) ? res.data.total : 0;
-                const synced = (res.data && res.data.synced !== undefined) ? res.data.synced : 0;
-                if (synced > 0) {
-                    showToast(t('sync.toast.synced_new', { n: synced, total: total }));
-                } else {
-                    showToast(t('sync.toast.all_up_to_date', { total: total }));
-                }
-            } else {
-                showToast(t('alert.saveFail') + ((res && res.data && res.data.message) || (res && res.stderr) || 'Error'));
-            }
-        } catch (e) {
-            showToast(t('alert.saveError') + e.message);
-        } finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.innerHTML = t('sync.btn.run');
-            }
-        }
-    }
-
     // KernelSU / APatch / Magisk Execution Bridge
     let cbCounter = 0;
     async function execAction(action, payload) {
@@ -996,65 +597,6 @@
                 resolve({ success: false, stderr: e.message, data: null });
             }
         });
-    }
-
-    async function refreshEventLog() {
-        const box = document.getElementById('eventLog');
-        if (!box) return;
-        box.textContent = t('log.loading');
-        const res = await execAction('event_log');
-        if (res.success) {
-            box.textContent = (res.data.log || '').trim() || t('log.empty');
-            box.scrollTop = box.scrollHeight;
-        } else {
-            box.textContent = t('log.error');
-        }
-    }
-
-    async function clearEventLog() {
-        const res = await execAction('event_log_clear');
-        if (res.success) {
-            const box = document.getElementById('eventLog');
-            if (box) box.textContent = t('log.empty');
-            showToast(t('log.cleared'));
-        }
-    }
-
-    // Critical App Recommendation Engine
-    function isCriticalApp(pkg) {
-        const p = pkg.toLowerCase();
-
-        // 1. Banking / Finance / Crypto
-        if (p.includes('bank') || p.includes('bkash') || p.includes('astha') || p.includes('citytouch') ||
-            p.includes('binance') || p.includes('bitget') || p.includes('pyypl') || p.includes('wallet') ||
-            p.includes('pay') || p.includes('finance') || p.includes('money') || p.includes('crypto') ||
-            p.includes('revolut') || p.includes('wise') || p.includes('nagad') || p.includes('upay') ||
-            p.includes('chase') || p.includes('citi') || p.includes('bofa') || p.includes('skrill')) {
-            return true;
-        }
-
-        // 2. Messaging / Chat / Calling
-        if (p.includes('whatsapp') || p.includes('telegram') || p.includes('orca') || p.includes('messenger') ||
-            p.includes('tencent.mm') || p.includes('wechat') || p.includes('discord') || p.includes('slack') ||
-            p.includes('signal') || p.includes('viber') || p.includes('line') || p.includes('kakao') ||
-            p.includes('sip') || p.includes('softphone') || p.includes('chat') || p.includes('im') ||
-            p.includes('messaging')) {
-            return true;
-        }
-
-        // 3. Mail
-        if (p.includes('.gm') || p.includes('gmail') || p.includes('email') || p.includes('mail') ||
-            p.includes('outlook') || p.includes('proton') || p.includes('spark') || p.includes('zoho')) {
-            return true;
-        }
-
-        // 4. Authenticator / 2FA / Security
-        if (p.includes('authenticator') || p.includes('authy') || p.includes('password') || p.includes('bitwarden') ||
-            p.includes('1password') || p.includes('keepass') || p.includes('yubico')) {
-            return true;
-        }
-
-        return false;
     }
 
     // Format package name for high readability
@@ -1119,11 +661,6 @@
                 packages: Array.from(savedApps),
                 installed: installedApps,
                 stopped: Array.from(stoppedApps),
-                sound_active: soundFixActive,
-                sound_backup: soundFixHasBackup,
-                features: soundFeatures,
-                channel_sync: channelSyncConfig,
-                alert_fix: alertFixConfig,
                 rom_state: romState,
                 gms_parity: currentGmsParity,
                 ts: Date.now()
@@ -1154,21 +691,6 @@
                 stoppedApps = new Set(cache.stopped);
                 hasLoadedStoppedStatus = true;
             }
-            if (cache.features) {
-                soundFeatures = Object.assign(soundFeatures, cache.features);
-            }
-            if (cache.sound_backup !== undefined) {
-                soundFixHasBackup = !!cache.sound_backup;
-            }
-            if (cache.sound_active !== undefined) {
-                soundFixActive = !!cache.sound_active;
-            }
-            if (cache.channel_sync) {
-                channelSyncConfig = Object.assign(channelSyncConfig, cache.channel_sync);
-            }
-            if (cache.alert_fix) {
-                alertFixConfig = Object.assign(alertFixConfig, cache.alert_fix);
-            }
             if (cache.rom_state) {
                 romState = cache.rom_state;
             }
@@ -1178,9 +700,6 @@
             }
 
             updateModeUI();
-            updateSoundFixUI(soundFixActive, soundFixHasBackup, soundFeatures);
-            updateChannelSyncUI(channelSyncConfig);
-            updateAlertFixUI(alertFixConfig);
             if (romState) renderRomStatus();
             if (installedApps.length) filterApps();
             checkDraftChanges();
@@ -1242,16 +761,6 @@
             isLoadingApps = false;
 
             updateModeUI();
-            if (data.sound_active !== undefined) {
-                soundFixActive = !!data.sound_active;
-                updateSoundFixUI(data.sound_active, data.sound_backup, data.features);
-            }
-            if (data.channel_sync) {
-                updateChannelSyncUI(data.channel_sync);
-            }
-            if (data.alert_fix) {
-                updateAlertFixUI(data.alert_fix);
-            }
             if (data.gms_parity) {
                 updateGmsParityUI(data.gms_parity);
             }
@@ -1598,104 +1107,6 @@
         });
     }
 
-    function selectRecommended() {
-        let count = 0;
-        installedApps.forEach(pkg => {
-            if (isCriticalApp(pkg)) {
-                selectedApps.add(pkg);
-                count++;
-            }
-        });
-        filterApps();
-        checkDraftChanges();
-        showToast(t('toast.recommended', { n: count }));
-    }
-
-    function selectAll(val) {
-        if (val) {
-            installedApps.forEach(pkg => selectedApps.add(pkg));
-        } else {
-            selectedApps.clear();
-        }
-        filterApps();
-        checkDraftChanges();
-    }
-
-    /* === Import & Export Preset System === */
-    function openImportModal() {
-        const modal = document.getElementById('ioModal');
-        const textarea = document.getElementById('modalTextarea');
-        const title = document.getElementById('modalTitle');
-        const help = document.getElementById('modalHelp');
-        const applyBtn = document.getElementById('modalApplyBtn');
-
-        title.textContent = t('modal.title.import');
-        help.textContent = t('modal.help.import');
-        textarea.value = '';
-        applyBtn.style.display = 'inline-flex';
-        modal.classList.add('show');
-        setTimeout(() => textarea.focus(), 100);
-    }
-
-    function exportToClipboard() {
-        const pkgList = Array.from(selectedApps).join('\n');
-        if (!pkgList) {
-            showToast(t('toast.noExport'));
-            return;
-        }
-
-        copyText(pkgList).then(() => {
-            showToast(t('toast.exported', { n: selectedApps.size }));
-        }).catch(() => {
-            const modal = document.getElementById('ioModal');
-            const textarea = document.getElementById('modalTextarea');
-            const title = document.getElementById('modalTitle');
-            const help = document.getElementById('modalHelp');
-            const applyBtn = document.getElementById('modalApplyBtn');
-
-            title.textContent = t('modal.title.export');
-            help.textContent = t('modal.help.export');
-            textarea.value = pkgList;
-            applyBtn.style.display = 'none';
-            modal.classList.add('show');
-            textarea.select();
-        });
-    }
-
-    function closeModal(e) {
-        if (!e || e.target.id === 'ioModal' || e.target.className === 'modal-close') {
-            document.getElementById('ioModal').classList.remove('show');
-        }
-    }
-
-    function clearModalText() {
-        document.getElementById('modalTextarea').value = '';
-        document.getElementById('modalTextarea').focus();
-    }
-
-    function applyImport() {
-        const rawText = document.getElementById('modalTextarea').value;
-        if (!rawText.trim()) {
-            showToast(t('toast.noInput'));
-            return;
-        }
-
-        const lines = rawText.split(/[\n,; ]+/).map(s => s.trim()).filter(Boolean);
-        let matchCount = 0;
-
-        lines.forEach(pkg => {
-            if (installedApps.includes(pkg)) {
-                selectedApps.add(pkg);
-                matchCount++;
-            }
-        });
-
-        filterApps();
-        checkDraftChanges();
-        closeModal();
-        showToast(t('toast.imported', { n: matchCount }));
-    }
-
     function copyText(str) {
         if (navigator.clipboard && navigator.clipboard.writeText) {
             return navigator.clipboard.writeText(str);
@@ -1771,11 +1182,8 @@
         applyI18n();
         initTab();
         updateModeUI();
-        updateSoundFixUI();
-        updateChannelSyncUI();
         if (currentGmsParity) updateGmsParityUI(currentGmsParity);
         if (romState) renderRomStatus();
         loadStatus();
         refreshRomStatus();
-        refreshEventLog();
     });

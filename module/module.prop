@@ -1,7 +1,7 @@
 id=oneone_fcm
-name=OneOne FCM - Pandora
-version=v1.2.3
-versionCode=123
+name=OneOne FCM
+version=v1.3.0
+versionCode=130
 author=OneOne
-description=Lite FCM delivery for Xiaomi 17 Pro (pandora).
+description=Lite FCM delivery for HyperOS China.
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json
