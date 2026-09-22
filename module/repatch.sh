@@ -297,6 +297,10 @@ cmd_run() {
     fi
 
     echo "$CUR" > "$MODDIR/rom.fingerprint"
+    # customize.sh records a compatibility key only for its own verified install
+    # path. An OTA re-patch invalidates that key, so a later module update must
+    # take the conservative full-patch path unless it writes fresh metadata.
+    rm -f "$MODDIR/patch.meta"
     rm -f "$FLAG_PENDING" "$FLAG_RUNNING"
     touch "$FLAG_REBOOT"
     touch "$SKIP_MOUNT"

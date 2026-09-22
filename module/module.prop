@@ -1,7 +1,7 @@
 id=oneone_fcm
 name=OneOne FCM
-version=v1.3.0
-versionCode=130
+version=v1.4.0
+versionCode=140
 author=OneOne
 description=Lite FCM delivery for HyperOS China.
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json

@@ -41,6 +41,9 @@ EXPECTED_INCREMENTAL="OS3.0.319.0.WBLCNXM"
 EXPECTED_SDK="36"
 EXPECTED_SERVICES_SHA256="4f313e77755d6a5ce20b4ad79d132067aebda5eb940089180a0bfbf62dbbe7ba"
 EXPECTED_MIUI_SERVICES_SHA256="0ca8bee568f2d4607aa6393764338d5b52fcd0101cdce49c39d8051a3fdc4c70"
+# Increment only when the Java/framework patch semantics change without changing
+# tools/patcher.jar. UI and WebUI shell changes deliberately do not affect it.
+PATCH_REVISION="1"
 
 [ "$(getprop ro.product.device)" = "$EXPECTED_DEVICE" ] || abort_install "This build is only for pandora."
 [ "$(getprop ro.build.version.incremental)" = "$EXPECTED_INCREMENTAL" ] || abort_install "Firmware must be $EXPECTED_INCREMENTAL."
@@ -176,6 +179,39 @@ fi
 [ -f "$OLD_MOD_DIR/stock_settings.conf" ] && cp -f "$OLD_MOD_DIR/stock_settings.conf" "$MODPATH/stock_settings.conf" 2>/dev/null || true
 [ -f "$OLD_MOD_DIR/.defaults_applied" ] && cp -f "$OLD_MOD_DIR/.defaults_applied" "$MODPATH/.defaults_applied" 2>/dev/null || true
 
+meta_value() {
+    sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n1
+}
+
+copy_reused_tree() {
+    _reuse_source="$1"
+    _reuse_target="$2"
+    rm -rf "$_reuse_target"
+    mkdir -p "$_reuse_target" || return 1
+
+    # Modules normally share the same filesystem, so hard-linking avoids a
+    # second 200+ MB copy. Fall back to a normal archival copy if they do not.
+    if cp -al "$_reuse_source/." "$_reuse_target/" 2>/dev/null; then
+        return 0
+    fi
+    rm -rf "$_reuse_target"
+    mkdir -p "$_reuse_target" || return 1
+    cp -a "$_reuse_source/." "$_reuse_target/" 2>/dev/null
+}
+
+can_reuse_patched_artifacts() {
+    _reuse_meta="$OLD_MOD_DIR/patch.meta"
+    [ -f "$_reuse_meta" ] || return 1
+    [ -f "$OLD_MOD_DIR/framework/services.jar" ] || return 1
+    [ -f "$OLD_MOD_DIR/framework/miui-services.jar" ] || return 1
+    find "$OLD_MOD_DIR/cache" -type f -name "$AOT_CACHE_MANIFEST" -size +0 2>/dev/null | grep -q . || return 1
+
+    [ "$(meta_value patch_key_sha256 "$_reuse_meta")" = "$PATCH_KEY_SHA256" ] || return 1
+    [ "$(sha256sum "$OLD_MOD_DIR/framework/services.jar" 2>/dev/null | awk '{print $1}')" = "$(meta_value patched_services_sha256 "$_reuse_meta")" ] || return 1
+    [ "$(sha256sum "$OLD_MOD_DIR/framework/miui-services.jar" 2>/dev/null | awk '{print $1}')" = "$(meta_value patched_miui_services_sha256 "$_reuse_meta")" ] || return 1
+    return 0
+}
+
 # Decide which jar copies the patch engine should read
 SERVICES_READ="$SERVICES_STOCK"
 MIUI_READ="$MIUI_SERVICES_STOCK"
@@ -232,12 +268,27 @@ if [ "$USING_STASH" != "1" ] && [ "$LIVE_IS_STOCK" = "1" ]; then
     fi
 fi
 
-ui_print "- Launching on-device DEX patch engine..."
-ui_print ""
-
 # 5. Execute Transactional Patcher
 PATCHER_JAR="$MODPATH/tools/patcher.jar"
 [ ! -f "$PATCHER_JAR" ] && abort_install "Patcher engine not found at $PATCHER_JAR"
+PATCHER_SHA256="$(sha256sum "$PATCHER_JAR" 2>/dev/null | awk '{print $1}')"
+[ -n "$PATCHER_SHA256" ] || abort_install "Could not hash patcher engine."
+PATCH_KEY_SHA256="$(printf '%s\n' "revision=$PATCH_REVISION|rom=$CURRENT_FP|services=$SERVICES_SHA256|miui_services=$MIUI_SERVICES_SHA256|patcher=$PATCHER_SHA256" | sha256sum | awk '{print $1}')"
+[ -n "$PATCH_KEY_SHA256" ] || abort_install "Could not calculate patch compatibility key."
+REUSED_PATCH_ARTIFACTS=0
+
+if can_reuse_patched_artifacts; then
+    ui_print "- Patch compatibility key matches the installed module"
+    ui_print "- Reusing verified framework jars and AOT cache (UI/shell-only update)"
+    copy_reused_tree "$OLD_MOD_DIR/framework" "$MODPATH/framework" || abort_install "Failed to reuse verified framework jars."
+    copy_reused_tree "$OLD_MOD_DIR/cache" "$MODPATH/cache" || abort_install "Failed to reuse verified AOT cache."
+    rm -rf "$MODPATH/system" "$MODPATH/system_ext"
+    rm -f "$MODPATH/wipe_cache_once"
+    REUSED_PATCH_ARTIFACTS=1
+else
+    ui_print "- Patch key changed or no verified artifact cache exists; full patch required"
+    ui_print "- Launching on-device DEX patch engine..."
+    ui_print ""
 
 execute_patcher_engine "$PATCHER_JAR" "$STAGE_DIR" \
     --services "$SERVICES_READ" \
@@ -358,6 +409,21 @@ else
     rm -rf "$MODPATH/cache" 2>/dev/null
     touch "$MODPATH/wipe_cache_once"
 fi
+fi
+
+PATCHED_SERVICES_SHA256="$(sha256sum "$MODPATH/framework/services.jar" 2>/dev/null | awk '{print $1}')"
+PATCHED_MIUI_SERVICES_SHA256="$(sha256sum "$MODPATH/framework/miui-services.jar" 2>/dev/null | awk '{print $1}')"
+[ -n "$PATCHED_SERVICES_SHA256" ] && [ -n "$PATCHED_MIUI_SERVICES_SHA256" ] || abort_install "Patched framework hash validation failed."
+PATCH_META_TMP="$MODPATH/patch.meta.tmp.$$"
+{
+    echo "format=1"
+    echo "patch_key_sha256=$PATCH_KEY_SHA256"
+    echo "patched_services_sha256=$PATCHED_SERVICES_SHA256"
+    echo "patched_miui_services_sha256=$PATCHED_MIUI_SERVICES_SHA256"
+    echo "reused=$REUSED_PATCH_ARTIFACTS"
+} > "$PATCH_META_TMP" || abort_install "Failed to write patch metadata."
+chmod 0600 "$PATCH_META_TMP" 2>/dev/null || true
+mv -f "$PATCH_META_TMP" "$MODPATH/patch.meta" || abort_install "Failed to publish patch metadata."
 
 # 7.6 Backup PowerKeeper stock configuration at install time
 if command -v content >/dev/null 2>&1 && [ "$(getprop sys.boot_completed)" = "1" ]; then
