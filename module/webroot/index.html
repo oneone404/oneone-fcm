@@ -45,160 +45,20 @@
 <div class="container">
     <!-- Tab 1: Home / Trang chủ -->
     <div class="tab-pane active" id="paneHome">
-        <!-- ROM / Patch State Card -->
         <div class="card">
             <div class="card-header">
-                <div class="card-title">
-                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                    </svg>
-                    <span data-i18n="rom.title">Framework Patch</span>
-                </div>
-                <span id="romBadge" class="status-pill status-running"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
+                <div class="card-title"><span data-i18n="gms.title">GMS / FCM support</span></div>
+                <span id="gmsBadge" class="status-pill status-stopped" data-i18n="gms.checking">Checking</span>
             </div>
-
             <div class="rom-grid">
-                <div class="rom-row"><span data-i18n="rom.current">Current firmware</span><code id="romCurrent"><span class="skeleton skeleton-text" style="width: 110px;"></span></code></div>
-                <div class="rom-row"><span data-i18n="rom.patched">Patched for</span><code id="romStored"><span class="skeleton skeleton-text" style="width: 130px;"></span></code></div>
-                <div class="rom-row"><span data-i18n="rom.live">Live framework</span><code id="romLive"><span class="skeleton skeleton-text" style="width: 85px;"></span></code></div>
+                <div class="rom-row"><span data-i18n="gms.firmware">Firmware</span><code id="gmsFirmware">—</code></div>
+                <div class="rom-row"><span data-i18n="gms.doze">GMS Doze exemption</span><code id="gmsDoze">—</code></div>
             </div>
-
-            <div class="mode-desc" id="romHint"><span class="skeleton skeleton-text" style="width: 65%; height: 11px;"></span></div>
-
+            <div class="mode-desc" data-i18n="gms.hint">Stock framework. Google Play services receive background exemptions at boot; delivery still depends on network access and each app's settings.</div>
             <div class="action-row" style="margin-top: 10px;">
-                <button class="btn btn-accent" id="btnRepatch" onclick="runRepatch()" data-i18n="rom.repatch">Re-patch now</button>
-                <button class="btn" onclick="refreshRomStatus()" data-i18n="rom.refresh">Refresh</button>
+                <button class="btn" onclick="loadStatus()" data-i18n="gms.refresh">Refresh</button>
             </div>
         </div>
-
-        <!-- Mode Selector Card -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                    </svg>
-                    <span data-i18n="mode.title">Wake Mode</span>
-                </div>
-                <span id="modeBadge" class="status-pill status-running"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
-            </div>
-
-            <div class="mode-segmented">
-                <button class="mode-btn" id="btnModeAll" onclick="setMode('ALL')" data-i18n="mode.all">Allow All</button>
-                <button class="mode-btn" id="btnModeWhitelist" onclick="setMode('WHITELIST')" data-i18n="mode.whitelist">Whitelist</button>
-                <button class="mode-btn" id="btnModeBlacklist" onclick="setMode('BLACKLIST')" data-i18n="mode.blacklist">Blacklist</button>
-            </div>
-
-            <div class="mode-desc" id="modeDescription">
-                <span class="skeleton skeleton-text" style="width: 75%; height: 11px;"></span>
-            </div>
-            <div class="action-row" style="margin-top: 10px;">
-                <button class="btn btn-recommend" id="btnRestoreLiteDefaults" onclick="applyLiteDefaults()" data-i18n="lite.defaults">Restore Lite defaults</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Tab 2: Apps / Ứng dụng -->
-    <div class="tab-pane" id="paneApps">
-        <!-- App Filter Manager Card -->
-    <div class="card">
-        <div class="card-header">
-            <div class="card-title">
-                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span id="listTitle" data-i18n="list.title.all">Package Filter List</span>
-            </div>
-            <span id="selectedCount" class="status-pill status-stopped"><span class="skeleton skeleton-text" style="width: 52px; height: 10px;"></span></span>
-        </div>
-
-        <!-- View Filter Tabs: All / Enabled / Disabled / Active / Stopped -->
-        <div class="filter-tabs">
-            <button class="filter-tab active" id="tabFilterAll" onclick="setViewFilter('ALL')"><span data-i18n="tab.all">All</span> (<span id="countAll">&minus;</span>)</button>
-            <button class="filter-tab" id="tabFilterEnabled" onclick="setViewFilter('ENABLED')"><span data-i18n="tab.enabled">Enabled</span> (<span id="countEnabled">&minus;</span>)</button>
-            <button class="filter-tab" id="tabFilterDisabled" onclick="setViewFilter('DISABLED')"><span data-i18n="tab.disabled">Disabled</span> (<span id="countDisabled">&minus;</span>)</button>
-            <button class="filter-tab" id="tabFilterActive" onclick="setViewFilter('ACTIVE')"><span data-i18n="tab.active">Active</span> (<span id="countActive"><span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span></span>)</button>
-            <button class="filter-tab" id="tabFilterStopped" onclick="setViewFilter('STOPPED')"><span data-i18n="tab.stopped">Stopped</span> (<span id="countStopped"><span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span></span>)</button>
-        </div>
-
-        <!-- Search Bar -->
-        <div class="search-box">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input type="text" id="searchInput" placeholder="Search package name..." data-i18n-ph="search.placeholder" oninput="onSearchInput()">
-        </div>
-
-        <!-- Dynamic App List -->
-        <div class="app-list" id="appList" onscroll="handleListScroll()">
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 62%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 42%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 42px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 78%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 50%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 46px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 55%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 35%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 40px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 84%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 48%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 44px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 68%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 38%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 42px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-            <div class="skeleton-app-item">
-                <div class="skeleton skeleton-icon"></div>
-                <div class="skeleton-app-info">
-                    <span class="skeleton skeleton-text" style="width: 50%; height: 13px;"></span>
-                    <span class="skeleton skeleton-text" style="width: 30%; height: 9px;"></span>
-                </div>
-                <div class="skeleton-app-actions">
-                    <span class="skeleton skeleton-pill" style="width: 40px; height: 16px;"></span>
-                    <span class="skeleton skeleton-switch"></span>
-                </div>
-            </div>
-        </div>
-    </div>
     </div>
 
     <!-- Tab 3: FCM delivery core -->
@@ -209,7 +69,7 @@
                 <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                 </svg>
-                <span>FCM delivery core</span>
+<span data-i18n="parity.title">FCM delivery core</span>
             </div>
             <span id="parityBadge" class="status-pill status-stopped"><span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span></span>
         </div>
@@ -310,21 +170,14 @@
                 </div>
                 <div class="settings-row-info">
                     <div class="settings-row-title">OneOne FCM</div>
-                    <div class="settings-row-sub">Version v1.3.0 &bull; Author: OneOne</div>
+                    <div class="settings-row-sub">Version v1.5.0 &bull; Author: OneOne</div>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Floating Save Bar -->
-<div class="save-bar" id="saveBar">
-    <div>
-        <div style="font-size: 0.78rem; font-weight: 600;" id="saveBarStatus" data-i18n="save.ready">Changes Ready</div>
-        <div style="font-size: 0.65rem; color: var(--text-muted);" data-i18n="save.hint">Syncs live without reboot</div>
-    </div>
-    <button class="save-btn" onclick="saveConfiguration()" data-i18n="save.button">Save Changes</button>
-</div>
+
 
 <!-- ReSukiSU Native Material 3 Bottom Navigation Bar -->
 <nav class="bottom-nav">
@@ -337,17 +190,7 @@
         </div>
         <span class="nav-label" data-i18n="nav.home">Home</span>
     </button>
-    <button class="nav-item" id="navBtnApps" onclick="switchTab('apps')" type="button">
-        <div class="nav-icon-pill">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="7" height="7" rx="1"/>
-                <rect x="14" y="3" width="7" height="7" rx="1"/>
-                <rect x="14" y="14" width="7" height="7" rx="1"/>
-                <rect x="3" y="14" width="7" height="7" rx="1"/>
-            </svg>
-        </div>
-        <span class="nav-label" data-i18n="nav.apps">Apps</span>
-    </button>
+
     <button class="nav-item" id="navBtnFeatures" onclick="switchTab('features')" type="button">
         <div class="nav-icon-pill">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

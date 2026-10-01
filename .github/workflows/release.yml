@@ -15,6 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test settings-only module and upgrade migration
+        run: node tests/verify.mjs
+
       - name: Verify tag and module version
         shell: bash
         run: |

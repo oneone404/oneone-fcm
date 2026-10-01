@@ -1,145 +1,72 @@
 #!/system/bin/sh
-# OneOne FCM Lite WebUI backend.
-# Wake filtering, PowerKeeper/GMS delivery, and OTA re-patching only.
-
-DATA_DIR="/data/system"
-[ -d "$DATA_DIR" ] && [ -w "$DATA_DIR" ] || DATA_DIR="${TMPDIR:-/tmp}"
-CONF_FILE="$DATA_DIR/fcm_wake.conf"
+# Settings-only WebUI. Status reads never modify device settings.
+DATA_DIR=/data/system
 PK_BOOT_CONF="$DATA_DIR/fcm_pk_boot.conf"
-
 MODDIR="${0%/*}/../.."
-[ -d "$MODDIR" ] || MODDIR="/data/adb/modules/oneone_fcm"
-[ -d "$MODDIR" ] || MODDIR="/data/adb/modules_update/oneone_fcm"
-[ -f "$MODDIR/common.sh" ] && . "$MODDIR/common.sh"
+. "$MODDIR/common.sh"
 STOCK_CONF="$MODDIR/stock_settings.conf"
 
 set_data_permissions() {
-    chmod 0644 "$1" 2>/dev/null || true
+    chmod 0644 "$1"
     chown system:system "$1" 2>/dev/null || true
     chcon u:object_r:system_data_file:s0 "$1" 2>/dev/null || true
 }
-
 read_pk_boot_config() {
     PK_GMS_BOOT=true
-    [ -f "$PK_BOOT_CONF" ] || return
-    _value=$(tr -d ' \r\n' < "$PK_BOOT_CONF" 2>/dev/null)
-    [ "$_value" = false ] || [ "$_value" = 0 ] && PK_GMS_BOOT=false
+    [ -f "$PK_BOOT_CONF" ] || return 0
+    _value=$(tr -d ' \r\n' < "$PK_BOOT_CONF")
+    case "$_value" in false|0) PK_GMS_BOOT=false ;; esac
 }
-
-disarm_powerkeeper_gms() {
-    command -v ensure_powerkeeper_backup >/dev/null 2>&1 && ensure_powerkeeper_backup "$STOCK_CONF"
-    _result=0
-    content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --method PUT_misc --arg gms_control --extra value:s:false 2>/dev/null || _result=1
-    for _pkg in com.google.android.gms com.android.vending; do
-        content update --uri content://com.miui.powerkeeper.configure/userTable --bind bgControl:s:noRestrict --where "pkgName='${_pkg}' AND userId=0" 2>/dev/null || _result=1
-        _entry=$(content query --uri content://com.miui.powerkeeper.configure/userTable --where "pkgName='${_pkg}' AND userId=0" 2>/dev/null | grep -o 'pkgName=' | head -n1)
-        [ -n "$_entry" ] || content insert --uri content://com.miui.powerkeeper.configure/userTable --bind pkgName:s:"${_pkg}" --bind userId:i:0 --bind bgControl:s:noRestrict 2>/dev/null || _result=1
-    done
-    iptables -F gms_wall 2>/dev/null
-    ip6tables -F gms_wall 2>/dev/null
-    return "$_result"
-}
-
-cleanup_legacy_runtime_state() {
-    rm -f "$DATA_DIR/fcm_channel_sync.json" "$DATA_DIR/fcm_synced_channels.txt" "$DATA_DIR/fcm_sound_state.json" "$DATA_DIR/fcm_sound.lock" 2>/dev/null || true
-}
-
-write_wake_config() {
-    _tmp="$CONF_FILE.tmp.$$"
-    { echo "# OneOne FCM Lite wake allowlist."; echo "MODE=$1"; [ -n "$2" ] && printf '%s\n' "$2"; } > "$_tmp" || return 1
-    set_data_permissions "$_tmp"
-    mv -f "$_tmp" "$CONF_FILE" 2>/dev/null || return 1
-    set_data_permissions "$CONF_FILE"
-}
-
-write_lite_defaults() {
-    _defaults='com.google.android.gm
-com.zing.zalo
-com.facebook.orca
-com.facebook.lite
-com.facebook.katana
-com.instagram.android
-org.telegram.messenger
-com.openai.chatgpt
-mobile.acb.com.vn
-com.mbmobile'
-    write_wake_config WHITELIST "$_defaults" || return 1
-    printf 'true\n' > "$PK_BOOT_CONF" || return 1
-    set_data_permissions "$PK_BOOT_CONF"
-    cleanup_legacy_runtime_state
-    disarm_powerkeeper_gms
-}
-
-ensure_config() {
-    [ -f "$CONF_FILE" ] || write_lite_defaults || return 1
-    cleanup_legacy_runtime_state
-}
-
 get_pk_state() {
     PK_GMS_CTRL=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
-    if [ -z "$PK_GMS_CTRL" ]; then
-        _global=$(getprop ro.product.mod_device 2>/dev/null | grep -i global || getprop ro.miui.customized.region 2>/dev/null | grep -i global)
-        [ -n "$_global" ] && PK_GMS_CTRL=global_na || PK_GMS_CTRL=unknown
-    fi
+    case "$PK_GMS_CTRL" in true|false) ;; *) PK_GMS_CTRL=unknown ;; esac
 }
-
-ACTION="${1:-status}"
-ensure_config || { echo '{"status":"error","message":"Failed to initialize configuration"}'; exit 1; }
-
-case "$ACTION" in
+disarm_powerkeeper_gms() {
+    ensure_powerkeeper_backup "$STOCK_CONF" || return 1
+    content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --method PUT_misc --arg gms_control --extra value:s:false >/dev/null 2>&1 || return 1
+    # Same conservative Play Store policy as the boot service.
+    content update --uri content://com.miui.powerkeeper.configure/userTable --bind bgControl:s:miuiAuto --where "pkgName='com.android.vending' AND userId=0" >/dev/null 2>&1 || return 1
+    iptables -F gms_wall 2>/dev/null || true
+    ip6tables -F gms_wall 2>/dev/null || true
+}
+fail() {
+    echo '{"status":"error","message":"Action failed; original settings backup retained"}'
+    exit 1
+}
+json_string() {
+    # Properties may contain quotes/control characters; escape JSON safely.
+    printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g;s/"/\\"/g'
+}
+case "${1:-status}" in
     status|load_status|get_status)
-        MODE=$(grep '^MODE=' "$CONF_FILE" 2>/dev/null | head -n1 | cut -d= -f2 | tr -d '\r\n ')
-        [ -n "$MODE" ] || MODE=WHITELIST
-        PACKAGES=$(grep -v '^#' "$CONF_FILE" | grep -v '^MODE=' | grep -v '^$' | tr -d '\r' | grep -E '^[a-zA-Z0-9._-]+$' | awk 'BEGIN{f=1;printf "["}{if(!f)printf ",";printf "\"%s\"", $0;f=0}END{printf "]"}')
-        [ -n "$PACKAGES" ] || PACKAGES='[]'
-        INSTALLED=$(pm list packages -3 2>/dev/null | sed 's/^package://' | sort | awk 'BEGIN{f=1;printf "["}{if(!f)printf ",";printf "\"%s\"", $0;f=0}END{printf "]"}')
-        [ -n "$INSTALLED" ] || INSTALLED='[]'
         read_pk_boot_config; get_pk_state
-        printf '{"status":"ok","mode":"%s","packages":%s,"installed":%s,"gms_parity":{"powerkeeper_gms_control":"%s","boot_apply":%s}}\n' "$MODE" "$PACKAGES" "$INSTALLED" "$PK_GMS_CTRL" "$PK_GMS_BOOT"
-        ;;
-    stopped|capabilities)
-        dumpsys package 2>/dev/null | awk '/Package \[/ {sub(/.*Package \[/,"");sub(/\].*/,"");p=$0;c++} /stopped=true/ {if(p!="")s[p]=1} END {if(!c)exit 1;printf "{\"status\":\"ok\",\"stopped\":[";f=1;for(p in s){if(!f)printf ",";printf "\"%s\"",p;f=0}printf "]}\n"}' || echo '{"status":"error","message":"Failed to read package status"}'
-        ;;
-    save_config)
-        BODY="${2:-$(cat 2>/dev/null)}"
-        MODE=$(printf '%s' "$BODY" | grep -o '"mode":"[^"]*"' | cut -d: -f2 | tr -d '"' | tr '[:lower:]' '[:upper:]')
-        case "$MODE" in ALL|WHITELIST|BLACKLIST) ;; *) MODE=WHITELIST ;; esac
-        PACKAGES=$(printf '%s' "$BODY" | sed -n 's/.*"packages":\[\([^]]*\)\].*/\1/p' | tr ',' '\n' | tr -d '" ' | grep -E '^[a-zA-Z0-9._-]+$')
-        write_wake_config "$MODE" "$PACKAGES" && echo '{"status":"ok","message":"Configuration saved successfully"}' || { echo '{"status":"error","message":"Failed to save configuration"}'; exit 1; }
-        ;;
-    apply_lite_defaults)
-        write_lite_defaults && echo '{"status":"ok","message":"Lite defaults restored"}' || { echo '{"status":"error","message":"Failed to restore Lite defaults"}'; exit 1; }
-        ;;
-    repatch_status)
-        [ -f "$MODDIR/repatch.sh" ] && OUT=$(sh "$MODDIR/repatch.sh" status 2>/dev/null) || OUT='state=ok'
-        state=$(printf '%s\n' "$OUT" | sed -n 's/^state=//p' | head -n1); [ -n "$state" ] || state=ok
-        current=$(printf '%s\n' "$OUT" | sed -n 's/^current=//p' | head -n1 | sed 's/\\/\\\\/g;s/"/\\"/g')
-        stored=$(printf '%s\n' "$OUT" | sed -n 's/^stored=//p' | head -n1 | sed 's/\\/\\\\/g;s/"/\\"/g')
-        active=$(printf '%s\n' "$OUT" | sed -n 's/^active=//p' | head -n1)
-        last=$(printf '%s\n' "$OUT" | sed -n 's/^last=//p' | head -n1 | sed 's/\\/\\\\/g;s/"/\\"/g')
-        printf '{"status":"ok","state":"%s","current":"%s","stored":"%s","active":"%s","last":"%s"}\n' "$state" "$current" "$stored" "$active" "$last"
-        ;;
-    repatch_run)
-        [ -f "$MODDIR/repatch.sh" ] && OUT=$(sh "$MODDIR/repatch.sh" run 2>&1); CODE=$?
-        printf '{"status":"ok","exit_code":%d,"output":"%s"}\n' "$CODE" "$(printf '%s' "$OUT" | tr '\n' ' ' | sed 's/\\/\\\\/g;s/"/\\"/g')"
-        ;;
-    reboot)
-        ( sleep 1; svc power reboot || reboot ) >/dev/null 2>&1 &
-        echo '{"status":"ok","message":"Rebooting device"}'
+        _idle=$(cmd deviceidle whitelist 2>/dev/null); _idle_status=$?
+        GMS_DOZE=unknown
+        if [ "$_idle_status" -eq 0 ]; then
+            GMS_DOZE=false
+            printf '%s\n' "$_idle" | grep -q 'com.google.android.gms' && GMS_DOZE=true
+        fi
+        _firmware=$(json_string "$(getprop ro.build.version.incremental)")
+        _version=$(sed -n 's/^version=//p' "$MODDIR/module.prop" | head -n1)
+        printf '{"status":"ok","version":"%s","firmware":"%s","doze":"%s","gms_parity":{"powerkeeper_gms_control":"%s","boot_apply":%s}}\n' "$_version" "$_firmware" "$GMS_DOZE" "$PK_GMS_CTRL" "$PK_GMS_BOOT"
         ;;
     set_pk_gms|toggle_pk_gms)
-        [ "$2" = false ] && disarm_powerkeeper_gms
-        if [ "$2" != false ]; then
-            if command -v restore_powerkeeper_state >/dev/null 2>&1; then restore_powerkeeper_state "$STOCK_CONF"; else content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --method PUT_misc --arg gms_control --extra value:s:true 2>/dev/null; fi
-        fi
-        get_pk_state; printf '{"status":"ok","powerkeeper_gms_control":"%s"}\n' "$PK_GMS_CTRL"
+        case "$2" in
+            false) disarm_powerkeeper_gms || fail ;;
+            true) restore_powerkeeper_state "$STOCK_CONF" >/dev/null 2>&1 || fail ;;
+            *) fail ;;
+        esac
+        get_pk_state
+        printf '{"status":"ok","powerkeeper_gms_control":"%s"}\n' "$PK_GMS_CTRL"
         ;;
     set_pk_gms_boot)
-        TARGET="$2"; [ "$TARGET" = 1 ] && TARGET=true; [ "$TARGET" = 0 ] && TARGET=false
-        [ "$TARGET" = true ] || [ "$TARGET" = false ] || TARGET=true
-        printf '%s\n' "$TARGET" > "$PK_BOOT_CONF" && set_data_permissions "$PK_BOOT_CONF" || { echo '{"status":"error","message":"Failed to write boot setting"}'; exit 1; }
-        [ "$TARGET" = true ] && disarm_powerkeeper_gms
-        get_pk_state; printf '{"status":"ok","boot_apply":%s,"powerkeeper_gms_control":"%s"}\n' "$TARGET" "$PK_GMS_CTRL"
+        case "$2" in true|false) TARGET="$2" ;; *) fail ;; esac
+        [ "$TARGET" != true ] || disarm_powerkeeper_gms || fail
+        printf '%s\n' "$TARGET" > "$PK_BOOT_CONF.tmp.$$" || fail
+        set_data_permissions "$PK_BOOT_CONF.tmp.$$"
+        mv -f "$PK_BOOT_CONF.tmp.$$" "$PK_BOOT_CONF" || fail
+        get_pk_state
+        printf '{"status":"ok","boot_apply":%s,"powerkeeper_gms_control":"%s"}\n' "$TARGET" "$PK_GMS_CTRL"
         ;;
-    *) echo '{"status":"error","message":"Unknown or unsupported action"}' ;;
+    *) fail ;;
 esac

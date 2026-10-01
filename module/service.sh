@@ -7,16 +7,7 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
   sleep 2
 done
 
-# ==============================================================================
-# 0. Post-OTA Re-Patch
-# ==============================================================================
-# When the firmware build changed under the module, post-fs-data.sh skipped every
-# framework mount and left a pending flag: the device is running stock. Re-patch
-# against the new stock jars in the background and notify the user to reboot. On
-# failure the device simply stays stock and the state remains visible in the WebUI.
-if [ -f "$MODDIR/repatch_pending" ] && [ -f "$MODDIR/repatch.sh" ]; then
-    ( sleep 20; sh "$MODDIR/repatch.sh" run ) >/dev/null 2>&1 &
-fi
+# No post-OTA re-patching: this version never replaces framework files.
 
 # ==============================================================================
 # 1. Preserve the stock state required to restore the GMS exemption cleanly.
@@ -36,21 +27,21 @@ if [ ! -f "$STOCK_CONF" ] || ! grep -q '^gms_user_whitelisted=' "$STOCK_CONF" 2>
     STOCK_TMP="$MODDIR/stock_settings.conf.tmp.$$"
     rm -f "$STOCK_TMP" 2>/dev/null
     if [ -f "$STOCK_CONF" ]; then
-        cp -f "$STOCK_CONF" "$STOCK_TMP" 2>/dev/null || : > "$STOCK_TMP"
+        cp -f "$STOCK_CONF" "$STOCK_TMP" 2>/dev/null || exit 1
     else
         : > "$STOCK_TMP"
     fi
 
-    # Backup initial GMS Doze user-whitelist state
-    if cmd deviceidle whitelist 2>/dev/null | grep -q "com.google.android.gms"; then
+    # Refuse changes if the original exemption cannot be read.
+    _gms_idle=$(cmd deviceidle whitelist 2>/dev/null) || exit 1
+    if printf '%s\n' "$_gms_idle" | grep -q "com.google.android.gms"; then
         echo "gms_user_whitelisted=1" >> "$STOCK_TMP"
     else
         echo "gms_user_whitelisted=0" >> "$STOCK_TMP"
     fi
 
     # Backup initial GMS AppOps state for surgical restoration on uninstall.
-    # read_appop_mode is the same reader the per-app FSI backup uses, so both
-    # sides record modes by identical rules.
+    # Preserve the effective mode rather than guessing that it was default.
     for op in $GMS_APPOPS; do
         [ -z "$op" ] && continue
         op_mode=$(read_appop_mode com.google.android.gms "$op")
@@ -58,7 +49,7 @@ if [ ! -f "$STOCK_CONF" ] || ! grep -q '^gms_user_whitelisted=' "$STOCK_CONF" 2>
     done
 
     chmod 0600 "$STOCK_TMP" 2>/dev/null
-    mv -f "$STOCK_TMP" "$STOCK_CONF" 2>/dev/null
+    mv -f "$STOCK_TMP" "$STOCK_CONF" 2>/dev/null || exit 1
 fi
 
 # Capture both PowerKeeper userTable rows before any service or WebUI path can
@@ -87,7 +78,6 @@ if [ -n "$GMS_UID" ]; then
   cmd greezer thuid "$GMS_UID" 86400000 2>/dev/null
   cmd greezer unmonitor "$GMS_UID" 2>/dev/null
   cmd deviceidle whitelist +com.google.android.gms 2>/dev/null
-  cmd deviceidle sys-whitelist +com.google.android.gms 2>/dev/null
   cmd appops set com.google.android.gms RUN_IN_BACKGROUND allow 2>/dev/null
   cmd appops set com.google.android.gms RUN_ANY_IN_BACKGROUND allow 2>/dev/null
   cmd appops set com.google.android.gms 10008 allow 2>/dev/null
@@ -108,7 +98,7 @@ if [ -n "$GMS_UID" ]; then
   done
 
   # ── Gap 1: GMS Socket Recovery ─────────────────────────────────────────────
-  # Trigger GCM_RECONNECT broadcast to force immediate MCS socket establishment
+  # Request a reconnect; GMS may ignore this and network access is still required.
   am broadcast -a com.google.android.intent.action.GCM_RECONNECT \
     -p com.google.android.gms >/dev/null 2>&1
 fi
@@ -139,7 +129,7 @@ apply_pk_boot_disarm() {
         if command -v content >/dev/null 2>&1; then
             _has_pk_gms=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=' | head -n1)
             if [ "$ROM_REGION" = "cn" ] || [ -n "$_has_pk_gms" ]; then
-                command -v ensure_powerkeeper_backup >/dev/null 2>&1 && ensure_powerkeeper_backup "$STOCK_CONF"
+                ensure_powerkeeper_backup "$STOCK_CONF" || continue
                 content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
                   --method PUT_misc --arg gms_control --extra value:s:false 2>/dev/null || true
                 # Ensure Play Store uses standard miuiAuto to prevent background connection loops on CN network
@@ -151,31 +141,6 @@ apply_pk_boot_disarm() {
         fi
     done
 }
-
-# ==============================================================================
-# 4. FCM Wake Filter Configuration
-# ==============================================================================
-CONF_FILE="/data/system/fcm_wake.conf"
-if [ ! -f "$CONF_FILE" ]; then
-    cat <<'EOF' > "$CONF_FILE"
-# OneOne FCM Lite: only known messaging, mail, and financial apps wake by
-# default. Missing packages are ignored; users can adjust the list in WebUI.
-MODE=WHITELIST
-com.google.android.gm
-com.zing.zalo
-com.facebook.orca
-com.facebook.lite
-com.facebook.katana
-com.instagram.android
-org.telegram.messenger
-com.openai.chatgpt
-mobile.acb.com.vn
-com.mbmobile
-EOF
-fi
-chmod 0644 "$CONF_FILE" 2>/dev/null
-chown system:system "$CONF_FILE" 2>/dev/null
-chcon u:object_r:system_data_file:s0 "$CONF_FILE" 2>/dev/null
 
 [ -f "$MODDIR/webroot/cgi-bin/exec" ] && chmod 0755 "$MODDIR/webroot/cgi-bin/exec" 2>/dev/null
 

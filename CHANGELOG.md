@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.0
+
+- Remove framework JAR patching, repatching, framework mounts and dex2oat.
+- Keep GMS background AppOps, Doze exemption, Greezer thaw/unmonitor,
+  boot reconnect request and optional PowerKeeper GMS firewall handling.
+- Upgrade stages only checksummed records of legacy cache artifacts. At the
+  next boot, remove matching module-created files from /data/dalvik-cache;
+  leave unrelated/changed files and ART-managed cache untouched.
+- Preserve original settings backups and the PowerKeeper boot preference.
+- Remove the ineffective wake whitelist/app list and repatch WebUI. Keep
+  Home, PowerKeeper and Settings with English/Vietnamese and system theme.
+- Status reads are non-mutating. PowerKeeper mutations require a saved backup.
+- Reboot is mandatory when upgrading from a patched release. Notifications
+  depend on network/app settings; this version does not bypass stock wake rules.
+
 ## v1.2.3
 
 - Hide visual scrollbars while preserving touch scrolling throughout WebUI.

@@ -350,36 +350,7 @@ body {
     flex-shrink: 0;
 }
 
-/* Mode Segmented Buttons */
-.mode-segmented {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    background-color: var(--bg-input);
-    padding: 4px;
-    border-radius: var(--radius-pill);
-    margin-bottom: 12px;
-}
 
-.mode-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    padding: 9px 4px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    border-radius: var(--radius-pill);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    text-align: center;
-    user-select: none;
-}
-
-.mode-btn.active {
-    background-color: var(--bg-card);
-    color: var(--text-primary);
-    box-shadow: none;
-}
 
 .mode-desc {
     font-size: 0.74rem;
@@ -446,82 +417,7 @@ body {
     color: var(--text-primary);
 }
 
-/* Filter Tabs */
-.filter-tabs {
-    display: flex;
-    gap: 6px;
-    background-color: var(--bg-input);
-    padding: 4px;
-    border-radius: var(--radius-pill);
-    margin-bottom: 12px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-}
 
-.filter-tabs::-webkit-scrollbar {
-    display: none;
-}
-
-.filter-tab {
-    flex: 1;
-    white-space: nowrap;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    padding: 7px 10px;
-    font-size: 0.74rem;
-    font-weight: 600;
-    border-radius: var(--radius-pill);
-    cursor: pointer;
-    text-align: center;
-    user-select: none;
-    transition: all 0.15s ease;
-}
-
-.filter-tab.active {
-    background-color: var(--bg-card);
-    color: var(--text-primary);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-/* Search Bar (Material 3) */
-.search-box {
-    position: relative;
-    margin-bottom: 12px;
-}
-
-.search-box input {
-    width: 100%;
-    height: 48px;
-    padding: 0 16px 0 46px;
-    background-color: var(--bg-input);
-    border: none;
-    border-radius: var(--radius-pill);
-    color: var(--text-primary);
-    font-size: 0.88rem;
-    font-family: var(--font);
-    outline: none;
-    transition: background-color 0.15s ease;
-}
-
-.search-box input:focus {
-    background-color: var(--bg-item);
-}
-
-.search-box input::placeholder {
-    color: var(--text-muted);
-}
-
-.search-box svg {
-    position: absolute;
-    left: 16px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 20px;
-    height: 20px;
-    color: var(--text-muted);
-    pointer-events: none;
-}
 
 /* Grouped feature settings */
 .feature-list {
@@ -622,84 +518,7 @@ body {
     font-size: 13px;
 }
 
-/* App List Item */
-.app-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-height: 55vh;
-    max-height: 55dvh;
-    overflow-y: auto;
-    padding-right: 2px;
-    -webkit-overflow-scrolling: touch;
-}
 
-.app-list::-webkit-scrollbar {
-    width: 4px;
-}
-
-.app-list::-webkit-scrollbar-thumb {
-    background: var(--border-control);
-    border-radius: var(--radius-pill);
-}
-
-.app-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 14px;
-    background-color: var(--bg-item);
-    border-radius: var(--radius-md);
-    gap: 12px;
-    user-select: none;
-    transition: background-color 0.12s ease;
-}
-
-.app-item.selected {
-    background-color: var(--bg-item);
-}
-
-.app-pkg-container {
-    min-width: 0;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-}
-
-.app-pkg {
-    font-size: 0.8rem;
-    color: var(--text-primary);
-    word-break: break-all;
-    font-family: var(--font-mono);
-}
-
-.app-pkg-prefix {
-    color: var(--text-muted);
-}
-
-.app-pkg-highlight {
-    font-weight: 700;
-}
-
-.copy-icon {
-    opacity: 0.4;
-    flex-shrink: 0;
-}
-
-.copy-icon svg {
-    width: 14px;
-    height: 14px;
-    color: var(--text-secondary);
-}
-
-.app-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-}
 
 /* ROM Status Rows */
 .rom-grid {
@@ -724,51 +543,7 @@ body {
     color: var(--text-primary);
 }
 
-/* Floating Save Bar */
-.save-bar {
-    position: fixed;
-    bottom: calc(86px + env(safe-area-inset-bottom, 12px));
-    left: 50%;
-    transform: translateX(-50%) translateY(140%);
-    opacity: 0;
-    pointer-events: none;
-    width: calc(100% - 32px);
-    max-width: 540px;
-    background: var(--save-bar-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border-radius: var(--radius-pill);
-    padding: 10px 14px 10px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: var(--save-bar-shadow);
-    z-index: 100;
-    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
-}
 
-.save-bar.visible {
-    transform: translateX(-50%) translateY(0);
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.save-btn {
-    background-color: var(--accent-btn);
-    color: var(--accent-btn-text);
-    border: none;
-    padding: 10px 22px;
-    font-size: 0.82rem;
-    font-weight: 600;
-    border-radius: var(--radius-pill);
-    cursor: pointer;
-    user-select: none;
-    flex-shrink: 0;
-}
-
-.save-btn:active {
-    transform: scale(0.96);
-}
 
 /* ReSukiSU Native Material 3 Bottom Navigation Bar */
 .bottom-nav {

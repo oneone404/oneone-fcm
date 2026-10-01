@@ -3,6 +3,7 @@
 
 RESTORE_CONF="/data/adb/oneone_fcm_restore.conf"
 RESTORE_SCRIPT="/data/adb/service.d/oneone_fcm_restore.sh"
+[ -f "$RESTORE_CONF" ] || exit 1
 MODULE_DIR="/data/adb/modules/oneone_fcm"
 
 cleanup_restore() {
@@ -85,7 +86,7 @@ fi
 FSI_APPOPS="USE_FULL_SCREEN_INTENT 10020 10021"
 
 if [ -f "$RESTORE_CONF" ]; then
-    grep "^fsi_pkg:" "$RESTORE_CONF" 2>/dev/null | cut -d: -f2 | tr -d '\r' | while read -r _pkg; do
+    grep "^fsi_appop:" "$RESTORE_CONF" 2>/dev/null | cut -d: -f2 | sort -u | tr -d '\r' | while read -r _pkg; do
         [ -z "$_pkg" ] && continue
         for _op in $FSI_APPOPS; do
             _mode=$(awk -F= -v key="fsi_appop:${_pkg}:${_op}" '
@@ -164,16 +165,6 @@ if [ -f "$RESTORE_CONF" ]; then
                 ;;
         esac
     done < "$RESTORE_CONF"
-else
-    settings delete secure notification_animation_style 2>/dev/null || true
-    settings delete system wake_up_for_notification 2>/dev/null || true
-    settings delete secure lock_screen_wake_up_for_notification 2>/dev/null || true
-    settings delete system wakeup_for_keyguard_notification 2>/dev/null || true
-    settings delete secure full_screen_aod_notification 2>/dev/null || true
-    settings delete secure lock_screen_show_notifications 2>/dev/null || true
-    settings delete secure lock_screen_allow_private_notifications 2>/dev/null || true
-    settings delete system pref_key_enable_notification_body 2>/dev/null || true
-    settings delete secure lock_screen_show_only_unseen_notifications 2>/dev/null || true
 fi
 
 cmd notification cancel fcm_repatch 2>/dev/null || true
