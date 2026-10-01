@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.6.0
+
+- Remove the one-time legacy framework/AOT migration engine, manifests and
+  post-fs-data hook. No code reads or writes Android framework/cache files.
+- Require completed v1.5.0 migration for existing installs; clean stock
+  first installs remain supported. No direct upgrade from patched versions.
+- Remove old FSI, SystemUI XML, notification-settings and repatch restoration.
+- Retain only the tiny original GMS/PowerKeeper settings record required to
+  restore current controls and uninstall cleanly; discard obsolete records.
+- Keep GMS/FCM behavior unchanged. No whitelist backup or extra daemon.
+- Keep the uninstall settings record on GMS or PowerKeeper restore failure.
+- Remove device, exact firmware and SDK locks. Detect Android-based HyperOS
+  and installed GMS; skip unsupported AppOps and unavailable OEM controls.
+- Default PowerKeeper boot handling to on for China and off elsewhere, while
+  retaining the user's explicit preference.
+- Combine status, PowerKeeper, appearance/language and about into one scrolling
+  page; remove bottom navigation, tab logic and translations.
+
 ## v1.5.0
 
 - Remove framework JAR patching, repatching, framework mounts and dex2oat.

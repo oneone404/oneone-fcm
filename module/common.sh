@@ -6,14 +6,8 @@
 backup_powerkeeper_state() {
     _pk_conf="$1"
     [ -n "$_pk_conf" ] || return 1
-
     if ! grep -q '^powerkeeper_gms_control=' "$_pk_conf" 2>/dev/null; then
-        _pk_gms_ctrl=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
-          --where "name='gms_control'" 2>/dev/null)
-        _pk_query_status=$?
-        [ "$_pk_query_status" -eq 0 ] || return 1
-        _pk_gms_ctrl=$(printf '%s\n' "$_pk_gms_ctrl" | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
-        [ -z "$_pk_gms_ctrl" ] && _pk_gms_ctrl="true"
+        _pk_gms_ctrl=$(read_powerkeeper_control) || return 1
         echo "powerkeeper_gms_control=${_pk_gms_ctrl}" >> "$_pk_conf"
     fi
 
@@ -27,6 +21,7 @@ backup_powerkeeper_state() {
           --where "pkgName='${_pk_pkg}' AND userId=0" 2>/dev/null)
         _pk_query_status=$?
         [ "$_pk_query_status" -eq 0 ] || return 1
+        case "$_pk_row" in *Error*|*Exception*|*Permission*|*Unknown*) return 1 ;; esac
 
         if printf '%s\n' "$_pk_row" | grep -q "pkgName=${_pk_pkg}"; then
             _pk_bg_control=$(printf '%s\n' "$_pk_row" | grep -o 'bgControl=[^,]*' | cut -d= -f2- | head -n1 | tr -d '\r')
@@ -66,7 +61,7 @@ restore_powerkeeper_state() {
     _pk_restore_status=0
 
     _pk_gms_ctrl=$(awk -F= '$1 == "powerkeeper_gms_control" { print substr($0, index($0, "=") + 1); exit }' "$_pk_conf" 2>/dev/null)
-    [ -z "$_pk_gms_ctrl" ] && _pk_gms_ctrl="true"
+    case "$_pk_gms_ctrl" in true|false) ;; *) return 1 ;; esac
     content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
       --method PUT_misc --arg gms_control --extra value:s:"$_pk_gms_ctrl" 2>/dev/null || _pk_restore_status=1
 
@@ -201,75 +196,25 @@ read_appop_mode() {
     echo "$_ra_mode"
 }
 
-detect_rom_profile() {
-    ROM_SDK="$(getprop ro.build.version.sdk)"
-    [ -z "$ROM_SDK" ] && ROM_SDK=0
-    ROM_INCREMENTAL="$(getprop ro.build.version.incremental)"
-
-    ROM_OS="hyperos"
-    [ "$ROM_SDK" -eq 33 ] && ROM_OS="miui14"
-
-    ROM_REGION="global"
-    case "$ROM_INCREMENTAL" in
-        *CNXM*|*cnxm*) ROM_REGION="cn" ;;
-    esac
-    REGION_PROP="$(getprop ro.miui.region | tr '[:upper:]' '[:lower:]')"
-    [ -z "$REGION_PROP" ] && REGION_PROP="$(getprop ro.miui.build.region | tr '[:upper:]' '[:lower:]')"
-    [ -z "$REGION_PROP" ] && REGION_PROP="$(getprop ro.vendor.miui.region | tr '[:upper:]' '[:lower:]')"
-    [ "$REGION_PROP" = "cn" ] && ROM_REGION="cn"
-}
-
-
-# Validate a legacy archive entry before using it under /data/dalvik-cache.
-valid_legacy_entry() {
-    case "$1" in arm|arm64|x86|x86_64) ;; *) return 1 ;; esac
-    case "$2" in ""|.*|*[!A-Za-z0-9_@.+-]*) return 1 ;; esac
-    case "$2" in system@*@classes.dex|system@*@classes.vdex|system_ext@*@classes.dex|system_ext@*@classes.vdex|product@*@classes.dex|product@*@classes.vdex|apex@*@classes.dex|apex@*@classes.vdex) return 0 ;; esac
+# No device/firmware allowlist. Detect Android-based HyperOS and CN region.
+is_hyperos() {
+    [ -n "$(getprop ro.mi.os.version.name)" ] && return 0
+    [ -n "$(getprop ro.mi.os.version.code)" ] && return 0
+    case "$(getprop ro.build.version.incremental)" in OS[0-9]*) return 0 ;; esac
     return 1
 }
 
-# Stage small checksummed records, never the archive or any JAR.
-stage_legacy_cache_cleanup() {
-    _lc_old="$1"
-    _lc_out="$2"
-    if [ -f "$_lc_old/legacy-cache.tsv" ]; then
-        cat "$_lc_old/legacy-cache.tsv" >> "$_lc_out" || return 1
-    fi
-    for _lc_dir in "$_lc_old"/cache/*; do
-        [ -d "$_lc_dir" ] && [ ! -L "$_lc_dir" ] || continue
-        _lc_isa="${_lc_dir##*/}"
-        _lc_isa="${_lc_isa%.old}"
-        [ -f "$_lc_dir/.manifest" ] || continue
-        while IFS= read -r _lc_name || [ -n "$_lc_name" ]; do
-            valid_legacy_entry "$_lc_isa" "$_lc_name" || continue
-            [ -f "$_lc_dir/$_lc_name" ] && [ ! -L "$_lc_dir/$_lc_name" ] || continue
-            _lc_hash=$(sha256sum "$_lc_dir/$_lc_name" | awk '{print $1}')
-            [ "${#_lc_hash}" -eq 64 ] || return 1
-            printf '%s\t%s\t%s\n' "$_lc_isa" "$_lc_name" "$_lc_hash" >> "$_lc_out" || return 1
-        done < "$_lc_dir/.manifest"
+default_pk_boot() {
+    case "$(getprop ro.build.version.incremental)" in *CNXM*|*cnxm*) echo true; return ;; esac
+    for _region_key in ro.miui.region ro.miui.build.region ro.vendor.miui.region; do
+        _region=$(getprop "$_region_key" | tr '[:upper:]' '[:lower:]')
+        [ "$_region" = cn ] && { echo true; return; }
     done
-    return 0
+    echo false
 }
 
-# Called BEFORE zygote. A changed file is no longer ours; leave it alone.
-# Neither ART-managed cache nor the currently running framework is touched.
-cleanup_legacy_cache() {
-    _lc_records="$1"
-    _lc_root="$2"
-    [ -f "$_lc_records" ] || return 0
-    _lc_failed=0
-    while IFS="$(printf '\t')" read -r _lc_isa _lc_name _lc_hash; do
-        valid_legacy_entry "$_lc_isa" "$_lc_name" || continue
-        case "$_lc_hash" in *[!a-f0-9]*) continue ;; esac
-        [ "${#_lc_hash}" -eq 64 ] || continue
-        _lc_path="$_lc_root/$_lc_isa/$_lc_name"
-        [ ! -L "$_lc_root/$_lc_isa" ] && [ ! -L "$_lc_path" ] || continue
-        [ -f "$_lc_path" ] || continue
-        _lc_actual=$(sha256sum "$_lc_path" 2>/dev/null | awk '{print $1}')
-        [ -n "$_lc_actual" ] || { _lc_failed=1; continue; }
-        [ "$_lc_actual" = "$_lc_hash" ] || continue
-        rm -f "$_lc_path" || _lc_failed=1
-    done < "$_lc_records"
-    [ "$_lc_failed" -eq 0 ] || return 1
-    rm -f "$_lc_records"
+read_powerkeeper_control() {
+    _pk_raw=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null) || return 1
+    _pk_value=$(printf '%s\n' "$_pk_raw" | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
+    case "$_pk_value" in true|false) printf '%s\n' "$_pk_value" ;; *) return 1 ;; esac
 }

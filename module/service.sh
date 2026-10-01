@@ -6,6 +6,8 @@ MODDIR=${0%/*}
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
   sleep 2
 done
+_gms_path=$(pm path --user 0 com.google.android.gms 2>/dev/null)
+printf '%s\n' "$_gms_path" | grep -q '^package:' || exit 0
 
 # No post-OTA re-patching: this version never replaces framework files.
 
@@ -45,6 +47,7 @@ if [ ! -f "$STOCK_CONF" ] || ! grep -q '^gms_user_whitelisted=' "$STOCK_CONF" 2>
     for op in $GMS_APPOPS; do
         [ -z "$op" ] && continue
         op_mode=$(read_appop_mode com.google.android.gms "$op")
+        [ "$op_mode" = unknown ] && continue
         echo "gms_appop:${op}=${op_mode}" >> "$STOCK_TMP"
     done
 
@@ -52,36 +55,24 @@ if [ ! -f "$STOCK_CONF" ] || ! grep -q '^gms_user_whitelisted=' "$STOCK_CONF" 2>
     mv -f "$STOCK_TMP" "$STOCK_CONF" 2>/dev/null || exit 1
 fi
 
-# Capture both PowerKeeper userTable rows before any service or WebUI path can
-# change them. If the provider is unavailable, leave PowerKeeper untouched.
-POWERKEEPER_BACKUP_OK=0
-if command -v ensure_powerkeeper_backup >/dev/null 2>&1; then
-    _pk_retries=0
-    while [ "$_pk_retries" -lt 5 ]; do
-        if ensure_powerkeeper_backup "$STOCK_CONF"; then
-            POWERKEEPER_BACKUP_OK=1
-            break
-        fi
-        sleep 2
-        _pk_retries=$((_pk_retries + 1))
-    done
-fi
+
 
 # ==============================================================================
 # 2. Google Play Services (GMS) Surgical Exemption
 # ==============================================================================
 # Dynamically resolve Google Play Services UID with exact package anchoring
-GMS_UID=$(pm list packages -U com.google.android.gms 2>/dev/null | grep -E '^package:com\.google\.android\.gms ' | grep -o 'uid:[0-9]*' | cut -d: -f2 | head -n1)
+GMS_UID=$(pm list packages --user 0 -U com.google.android.gms 2>/dev/null | grep -E '^package:com\.google\.android\.gms ' | grep -o 'uid:[0-9]*' | cut -d: -f2 | head -n1)
 [ -z "$GMS_UID" ] && GMS_UID=$(stat -c %u /data/data/com.google.android.gms 2>/dev/null)
 
 if [ -n "$GMS_UID" ]; then
   cmd greezer thuid "$GMS_UID" 86400000 2>/dev/null
   cmd greezer unmonitor "$GMS_UID" 2>/dev/null
   cmd deviceidle whitelist +com.google.android.gms 2>/dev/null
-  cmd appops set com.google.android.gms RUN_IN_BACKGROUND allow 2>/dev/null
-  cmd appops set com.google.android.gms RUN_ANY_IN_BACKGROUND allow 2>/dev/null
-  cmd appops set com.google.android.gms 10008 allow 2>/dev/null
-  cmd appops set com.google.android.gms WAKE_LOCK allow 2>/dev/null
+  for op in $GMS_APPOPS; do
+    [ "$(read_appop_mode com.google.android.gms "$op")" = unknown ] && continue
+    grep -Fq "gms_appop:${op}=" "$STOCK_CONF" || continue
+    cmd appops set com.google.android.gms "$op" allow 2>/dev/null || true
+  done
 
   # Unfreeze GMS cgroup freezer nodes across cgroup v1 and v2 hierarchies
   for fz in "/sys/fs/cgroup/apps/uid_${GMS_UID}/cgroup.freeze" \
@@ -111,24 +102,19 @@ fi
 # (IS_INTERNATIONAL_BUILD=false). Setting gms_control=false completely disarms
 # the firewall chain, DNS blocker, wakelock revocation, and alarm suppression.
 apply_pk_boot_disarm() {
-    _pk_boot="true"
+    _pk_boot=$(default_pk_boot)
     if [ -f "/data/system/fcm_pk_boot.conf" ]; then
         _v=$(cat "/data/system/fcm_pk_boot.conf" 2>/dev/null | tr -d ' \r\n')
-        [ "$_v" = "false" ] || [ "$_v" = "0" ] && _pk_boot="false"
+        case "$_v" in true|1) _pk_boot=true ;; false|0) _pk_boot=false ;; esac
     fi
     [ "$_pk_boot" = "true" ] || return 0
-
-    if [ -z "$ROM_REGION" ] && command -v detect_rom_profile >/dev/null 2>&1; then
-        detect_rom_profile
-    fi
 
     # Retries at boot completion, +5s, and +15s to prevent PowerKeeper's delayed
     # startup on China ROM from silently overriding the disarmed state.
     for _delay in 0 5 15; do
         [ "$_delay" -gt 0 ] && sleep "$_delay"
         if command -v content >/dev/null 2>&1; then
-            _has_pk_gms=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=' | head -n1)
-            if [ "$ROM_REGION" = "cn" ] || [ -n "$_has_pk_gms" ]; then
+            if read_powerkeeper_control >/dev/null 2>&1; then
                 ensure_powerkeeper_backup "$STOCK_CONF" || continue
                 content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
                   --method PUT_misc --arg gms_control --extra value:s:false 2>/dev/null || true

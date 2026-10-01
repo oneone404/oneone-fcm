@@ -3,6 +3,7 @@
 *.sh text eol=lf
 module/webroot/cgi-bin/exec text eol=lf
 *.js text eol=lf
+*.mjs text eol=lf
 *.json text eol=lf
 *.html text eol=lf
 *.css text eol=lf

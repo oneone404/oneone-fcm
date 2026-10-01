@@ -21,10 +21,6 @@
     --accent-btn-text: #ffffff;
     
     /* Navigation Bar - Light */
-    --nav-bar-bg: #efedee;
-    --nav-indicator: #d8d8da;
-    --nav-icon-active: #1d1b20;
-    --nav-icon-inactive: #737578;
     
     /* Switch Colors - Light */
     --switch-track-off: #e5e3e4;
@@ -34,8 +30,6 @@
     --switch-thumb-on: #ffffff;
     --switch-thumb-icon-on: #44474a;
     
-    --save-bar-bg: rgba(251, 249, 250, 0.96);
-    --save-bar-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
     
     --radius-sm: 12px;
     --radius-md: 18px;
@@ -65,10 +59,6 @@
         --accent-btn-text: #191a1c;
         
         /* Navigation Bar - Dark */
-        --nav-bar-bg: #191a1c;
-        --nav-indicator: #333436;
-        --nav-icon-active: #c2c7cd;
-        --nav-icon-inactive: #8c8e90;
         
         /* Switch Colors - Dark (from ReSukiSU screenshots) */
         --switch-track-off: #3a3b3e;
@@ -78,8 +68,6 @@
         --switch-thumb-on: #2b2c2e;
         --switch-thumb-icon-on: #c2c7cd;
         
-        --save-bar-bg: rgba(43, 44, 46, 0.96);
-        --save-bar-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
         
     }
 }
@@ -101,10 +89,6 @@
     --accent-btn: #d1d2d6;
     --accent-btn-text: #191a1c;
     
-    --nav-bar-bg: #191a1c;
-    --nav-indicator: #333436;
-    --nav-icon-active: #c2c7cd;
-    --nav-icon-inactive: #8c8e90;
     
     --switch-track-off: #3a3b3e;
     --switch-border-off: #55575a;
@@ -113,8 +97,6 @@
     --switch-thumb-on: #2b2c2e;
     --switch-thumb-icon-on: #c2c7cd;
     
-    --save-bar-bg: rgba(43, 44, 46, 0.96);
-    --save-bar-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
     
 }
 
@@ -133,18 +115,12 @@
     --text-on-accent: #ffffff;
     --accent-btn: #303034;
     --accent-btn-text: #ffffff;
-    --nav-bar-bg: #efedee;
-    --nav-indicator: #d8d8da;
-    --nav-icon-active: #1d1b20;
-    --nav-icon-inactive: #737578;
     --switch-track-off: #e5e3e4;
     --switch-border-off: #8e9094;
     --switch-thumb-off: #737578;
     --switch-track-on: #44474a;
     --switch-thumb-on: #ffffff;
     --switch-thumb-icon-on: #44474a;
-    --save-bar-bg: rgba(251, 249, 250, 0.96);
-    --save-bar-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
 }
 
 * {
@@ -179,7 +155,7 @@ body {
     min-height: 100dvh;
     width: 100%;
     overflow-x: hidden;
-    padding: calc(18px + env(safe-area-inset-top, 14px)) 16px calc(96px + env(safe-area-inset-bottom, 16px)) 16px;
+    padding: calc(18px + env(safe-area-inset-top, 14px)) 16px calc(18px + env(safe-area-inset-bottom, 16px)) 16px;
     line-height: 1.4;
     letter-spacing: 0.005em;
     transition: background-color 0.2s ease, color 0.2s ease;
@@ -190,42 +166,7 @@ body {
     margin: 0 auto;
 }
 
-/* Tab Panes */
-.tab-pane {
-    display: none;
-}
 
-.tab-pane.active {
-    display: block;
-    animation: tabFadeIn 0.2s cubic-bezier(0.2, 0, 0, 1);
-}
-
-@keyframes tabFadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-/* Page Topbar & Title */
-.page-topbar {
-    padding: calc(32px + env(safe-area-inset-top, 16px)) 4px 18px 4px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.page-title {
-    font-size: 2.1rem;
-    font-weight: 500;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-    line-height: 1.15;
-}
 
 .section-label {
     font-size: 0.82rem;
@@ -545,90 +486,7 @@ body {
 
 
 
-/* ReSukiSU Native Material 3 Bottom Navigation Bar */
-.bottom-nav {
-    position: fixed;
-    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    left: 20px;
-    right: 20px;
-    width: auto;
-    max-width: none;
-    height: 72px;
-    padding: 6px;
-    background-color: var(--bg-card);
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    align-items: center;
-    justify-content: initial;
-    z-index: 1000;
-    border-top: none;
-    border-radius: 36px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-    transition: background-color 0.2s ease;
-    box-sizing: border-box;
-}
 
-.nav-item {
-    width: 100%;
-    min-width: 0;
-    height: 60px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
-    outline: none;
-    cursor: pointer;
-    user-select: none;
-    padding: 5px 0 3px 0;
-    border-radius: 30px;
-    transition: background-color 0.2s ease, opacity 0.15s ease;
-}
-
-.nav-icon-pill {
-    width: 64px;
-    height: 28px;
-    border-radius: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 0.2s cubic-bezier(0.2, 0, 0, 1), transform 0.15s ease;
-}
-
-.nav-icon-pill svg {
-    width: 20px;
-    height: 20px;
-    color: var(--nav-icon-inactive);
-    transition: color 0.2s ease;
-}
-
-.nav-label {
-    font-size: 0.68rem;
-    font-weight: 500;
-    color: var(--nav-icon-inactive);
-    margin-top: 2px;
-    transition: color 0.2s ease, font-weight 0.2s ease;
-    letter-spacing: 0.01em;
-    white-space: nowrap;
-}
-
-.nav-item.active {
-    background-color: var(--nav-indicator);
-}
-
-.nav-item.active .nav-icon-pill svg {
-    color: var(--nav-icon-active);
-}
-
-.nav-item.active .nav-label {
-    color: var(--text-primary);
-    font-weight: 700;
-}
-
-.nav-item:active .nav-icon-pill {
-    transform: scale(0.92);
-}
 
 /* Toast */
 .toast {
@@ -672,21 +530,6 @@ body {
 }
 
 .skeleton-text { height: 12px; border-radius: 4px; display: inline-block; }
-.skeleton-pill { height: 18px; border-radius: var(--radius-pill); display: inline-block; }
-.skeleton-switch { width: 44px; height: 26px; border-radius: var(--radius-pill); display: inline-block; flex-shrink: 0; }
-.skeleton-icon { width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0; }
-.skeleton-app-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 14px;
-    background-color: var(--bg-item);
-    border-radius: var(--radius-md);
-    gap: 12px;
-}
-.skeleton-app-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.skeleton-app-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-
 .spinner-small {
     width: 18px;
     height: 18px;

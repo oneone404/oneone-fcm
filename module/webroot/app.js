@@ -128,7 +128,7 @@
         await loadDict(code);
         applyI18n();
         if (currentGmsParity) updateGmsParityUI(currentGmsParity);
-        if (currentStatus) renderStatus(currentStatus);
+        if (currentStatus) renderStatus(currentStatus); else loadStatus();
     }
 
     async function initI18n() {
@@ -177,45 +177,7 @@
         }
     }
 
-    /* =========================================================================
-     * ReSukiSU Bottom Navigation Tabs
-     * ====================================================================== */
-    let currentTab = 'home';
 
-    function switchTab(tabId) {
-        if (!['home', 'features', 'settings'].includes(tabId)) tabId = 'home';
-        currentTab = tabId;
-        store('fcm_ui_tab', tabId);
-
-        document.querySelectorAll('.bottom-nav .nav-item').forEach(btn => btn.classList.remove('active'));
-        const activeBtn = document.getElementById(
-            tabId === 'home' ? 'navBtnHome' :
-
-            tabId === 'features' ? 'navBtnFeatures' :
-            tabId === 'settings' ? 'navBtnSettings' : 'navBtnHome'
-        );
-        if (activeBtn) activeBtn.classList.add('active');
-
-        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
-        const activePane = document.getElementById(
-            tabId === 'home' ? 'paneHome' :
-
-            tabId === 'features' ? 'paneFeatures' :
-            tabId === 'settings' ? 'paneSettings' : 'paneHome'
-        );
-        if (activePane) activePane.classList.add('active');
-
-        window.scrollTo({ top: 0, behavior: 'instant' });
-
-
-    }
-
-    function initTab() {
-        const params = new URLSearchParams(window.location.search);
-        const urlTab = params.get('tab');
-        const savedTab = restore('fcm_ui_tab') || 'home';
-        switchTab(urlTab || savedTab);
-    }
 
 
 
@@ -233,7 +195,7 @@
         const pkCtrl = parity.powerkeeper_gms_control;
         currentPkCtrl = pkCtrl;
         const isPkDisarmed = pkCtrl === 'false';
-        const isPkNA = pkCtrl === 'global_na';
+        const isPkNA = pkCtrl === 'unsupported';
         const isPkUnknown = pkCtrl === 'unknown';
 
         const switchPk = document.getElementById('switchPkGms');
@@ -299,7 +261,7 @@
         if (parityBadge) {
             const allParity = isPkDisarmed || isPkNA;
             parityBadge.className = `status-pill ${allParity ? 'status-running' : 'status-stopped'}`;
-            parityBadge.textContent = allParity ? t('parity.badge.active') : t('parity.badge.partial');
+            parityBadge.textContent = isPkNA ? t('parity.not_applicable') : (allParity ? t('parity.badge.active') : t('parity.badge.partial'));
         }
     }
 
@@ -312,9 +274,9 @@
         const spinPk = document.getElementById('spinPkGms');
         const badgePk = document.getElementById('badgePkGms');
 
-        if (currentPkCtrl === 'global_na' || currentPkCtrl === 'unknown') {
-            showToast(currentPkCtrl === 'global_na'
-                ? (t('parity.not_applicable') || 'Not applicable on Global ROM')
+        if (currentPkCtrl === 'unsupported' || currentPkCtrl === 'unknown') {
+            showToast(currentPkCtrl === 'unsupported'
+                ? (t('parity.not_applicable') || 'PowerKeeper control unavailable')
                 : (t('parity.toast.error') || 'PowerKeeper state is unavailable'));
             if (switchPk) switchPk.checked = false;
             return;
@@ -374,9 +336,9 @@
         const lblSwitchPkBoot = document.getElementById('lblSwitchPkGmsBoot');
         const spinPkBoot = document.getElementById('spinPkGmsBoot');
 
-        if (currentPkCtrl === 'global_na' || currentPkCtrl === 'unknown') {
-            showToast(currentPkCtrl === 'global_na'
-                ? (t('parity.not_applicable') || 'Not applicable on Global ROM')
+        if (currentPkCtrl === 'unsupported' || currentPkCtrl === 'unknown') {
+            showToast(currentPkCtrl === 'unsupported'
+                ? (t('parity.not_applicable') || 'PowerKeeper control unavailable')
                 : (t('parity.toast.error') || 'PowerKeeper state is unavailable'));
             if (switchPkBoot) switchPkBoot.checked = false;
             return;
@@ -494,6 +456,7 @@
             const badge = document.getElementById('gmsBadge');
             badge.textContent = t('gms.unknown');
             badge.className = 'status-pill status-stopped';
+            updateGmsParityUI({powerkeeper_gms_control: 'unknown', boot_apply: false});
             ['switchPkGms', 'switchPkGmsBoot'].forEach(id => {
                 document.getElementById(id).disabled = true;
             });
@@ -522,7 +485,6 @@
 
     initTheme();
     initCachedI18n();
-    initTab();
     initI18n().finally(() => {
         initTheme();
         applyI18n();

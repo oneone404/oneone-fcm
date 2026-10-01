@@ -12,14 +12,13 @@ set_data_permissions() {
     chcon u:object_r:system_data_file:s0 "$1" 2>/dev/null || true
 }
 read_pk_boot_config() {
-    PK_GMS_BOOT=true
+    PK_GMS_BOOT=$(default_pk_boot)
     [ -f "$PK_BOOT_CONF" ] || return 0
     _value=$(tr -d ' \r\n' < "$PK_BOOT_CONF")
-    case "$_value" in false|0) PK_GMS_BOOT=false ;; esac
+    case "$_value" in true|1) PK_GMS_BOOT=true ;; false|0) PK_GMS_BOOT=false ;; esac
 }
 get_pk_state() {
-    PK_GMS_CTRL=$(content query --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --where "name='gms_control'" 2>/dev/null | grep -o 'value=[a-z]*' | cut -d= -f2 | head -n1)
-    case "$PK_GMS_CTRL" in true|false) ;; *) PK_GMS_CTRL=unknown ;; esac
+    PK_GMS_CTRL=$(read_powerkeeper_control) || PK_GMS_CTRL=unsupported
 }
 disarm_powerkeeper_gms() {
     ensure_powerkeeper_backup "$STOCK_CONF" || return 1
