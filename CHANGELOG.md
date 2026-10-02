@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.8.0
+
+- Restore the v1.4.0 framework engine: both services.jar and miui-services.jar,
+  the original patcher, AOT verification/cache and wake-policy configuration.
+- Single-page WebUI with no bottom navigation. Retain system/light/dark themes
+  and English/Vietnamese.
+- Bring back the native-style app picker: full label, icon, package, search,
+  optional system apps, cancel and explicit save. Read manager metadata first;
+  fall back to the existing package list if the manager API is unavailable.
+- Keep v1.4 configuration semantics (ALL/WHITELIST/BLACKLIST, bare packages);
+  do not import v1.7 user-prefixed policies into the old engine.
+- This release is firmware-locked to pandora OS3.0.319.0.WBLCNXM / SDK 36.
+  Disable v1.7.x and reboot to restore stock framework before installing.
+  Reboot again after the new module finishes installing.
+
 ## v1.2.3
 
 - Hide visual scrollbars while preserving touch scrolling throughout WebUI.
