@@ -418,7 +418,8 @@
                 + sessionLog.join('\n\n');
             const response = await execAction('save_log', report);
             result.textContent = response.success && response.data.path
-                ? t('log.saved') + '\n' + response.data.path : t('log.error');
+                ? t('log.saved') + '\n' + response.data.path
+                : t('log.error') + '\n' + (response.stderr || response.data?.message || 'Root bridge returned no diagnostic details');
         } catch (error) {
             logDiagnostic('save_log.error', error.message);
             result.textContent = t('log.error');

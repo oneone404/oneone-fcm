@@ -83,6 +83,57 @@ try {
     sh(common + '\ncontent() { echo "No result found."; }; ensure_powerkeeper_backup ' + quote(missingPkConf), 1);
     assert.ok(!fs.existsSync(missingPkConf));
 
+    // GMS-only noRestrict: update/insert, readback, preserve originals and restore.
+    for (const initial of ['restrict', 'absent', 'rejected-write']) {
+        const providerDir = path.join(fixture, 'provider-' + initial);
+        fs.mkdirSync(providerDir);
+        const gmsRow = path.join(providerDir, 'gms-row');
+        const providerLog = path.join(providerDir, 'calls.log');
+        const stock = path.join(providerDir, 'stock.conf');
+        fs.writeFileSync(gmsRow, initial === 'rejected-write' ? 'restrict' : initial);
+        const provider = `
+content() {
+    printf '%s\\n' "$*" >> ${quote(providerLog)}
+    case "$1" in
+        query)
+            case "$*" in
+                *SimpleSettings/misc*) echo 'Row: 0 name=gms_control, value=true';;
+                *com.google.android.gms*)
+                    row=$(cat ${quote(gmsRow)})
+                    if [ "$row" = absent ]; then echo 'No result found.'
+                    else echo "Row: 0 pkgName=com.google.android.gms, userId=0, bgControl=$row"; fi;;
+                *com.android.vending*) echo 'Row: 0 pkgName=com.android.vending, userId=0, bgControl=restrict';;
+                *) return 91;;
+            esac;;
+        update|insert)
+            case "$*" in
+                *com.google.android.gms*)
+                    ${initial === 'rejected-write' ? 'return 0' : 'for arg in "$@"; do case "$arg" in bgControl:s:*) printf "%s" "${arg#bgControl:s:}" > ' + quote(gmsRow) + ';; esac; done'};;
+            esac;;
+        delete) printf absent > ${quote(gmsRow)};;
+        call) :;;
+        *) return 92;;
+    esac
+}
+iptables() { :; }; ip6tables() { :; }
+`;
+        sh(common + provider + '\ndisarm_powerkeeper_with_gms_policy ' + quote(stock), initial === 'rejected-write' ? 1 : 0);
+        const firstStock = fs.readFileSync(stock, 'utf8');
+        const appliedCalls = fs.readFileSync(providerLog, 'utf8');
+        if (initial === 'rejected-write') {
+            assert.ok(!appliedCalls.includes('call --uri'), 'Do not declare a disarm after an ineffective GMS update');
+            assert.equal(fs.readFileSync(gmsRow, 'utf8'), 'restrict');
+            continue;
+        }
+        assert.equal(fs.readFileSync(gmsRow, 'utf8'), 'noRestrict');
+        assert.ok(appliedCalls.includes('bgControl:s:miuiAuto'));
+        assert.ok(!appliedCalls.includes('pkgName:s:com.android.vending'), 'Do not insert/change scope for Play Store');
+        sh(common + provider + '\ndisarm_powerkeeper_with_gms_policy ' + quote(stock));
+        assert.equal(fs.readFileSync(stock, 'utf8'), firstStock, 'Never replace originals with noRestrict');
+        sh(common + provider + '\nrestore_powerkeeper_state ' + quote(stock));
+        assert.equal(fs.readFileSync(gmsRow, 'utf8'), initial, 'Restore original row or remove inserted row');
+    }
+
     // Runtime with no PowerKeeper/Greezer and an unsupported OEM AppOp.
     const runtimeModule = path.join(fixture, 'runtime');
     fs.mkdirSync(runtimeModule, { recursive: true });
@@ -188,7 +239,9 @@ try {
         .replace('case "${1:-status}" in', 'case save_log in');
     const exportMocks = 'FW_STATE=' + quote(logState) + '\nFW_POLICY=' + quote(path.join(fixture, 'log-policy.conf')) + '\n'
         + 'getprop() { echo fixture; }; content() { echo "Row: 0 name=gms_control, value=false"; };\n'
-        + 'cmd() { echo "diagnostic $*"; };\n';
+        + 'cmd() { echo "diagnostic $*"; };\n'
+        // Enforce Toybox's trailing-XXX requirement while using host file creation.
+        + 'mktemp() { case "$1" in *XXX) command mktemp "$@";; *) echo "mktemp: need XXX" >&2; return 1;; esac; };\n';
     const exportOnce = () => JSON.parse(sh(exportMocks + 'set -- unused ' + quote("WebUI: exact raw error 'quotes'\nTiếng Việt") + '\n' + exportBackend));
     const exportA = exportOnce(), exportB = exportOnce();
     assert.equal(exportA.status, 'ok');
@@ -199,6 +252,16 @@ try {
     assert.ok(savedLog.includes('complete preparation output\nART error: fixture detail'));
     assert.ok(savedLog.includes('0:com.mbbank'));
     assert.ok(savedLog.includes("WebUI: exact raw error 'quotes'\nTiếng Việt"));
+    assert.ok(savedLog.includes('GMS PowerKeeper row:'));
+    assert.equal(fs.readdirSync(downloads).length, 2, 'Remove the empty name reservation after export');
+    assert.ok(fs.readdirSync(downloads).every(name => name.endsWith('.log')));
+    assert.equal(JSON.parse(sh(exportMocks + exportBackend.replace('-XXXXXX")', '-XXXXXX.log")'), 1)).status, 'error', 'Regression: Android rejects suffix after Xs');
+    const collision = path.join(downloads, 'collision');
+    fs.writeFileSync(collision, 'reservation');
+    fs.writeFileSync(collision + '.log', 'existing user log');
+    const collisionMocks = exportMocks + 'mktemp() { echo ' + quote(collision) + '; };\n';
+    assert.equal(JSON.parse(sh(collisionMocks + exportBackend, 1)).status, 'error');
+    assert.equal(fs.readFileSync(collision + '.log', 'utf8'), 'existing user log', 'Never delete/overwrite a colliding export');
     assert.equal(JSON.parse(sh(exportMocks + exportBackend.replace('_downloads=' + quote(downloads), '_downloads=' + quote(path.join(fixture, 'missing-download'))), 1)).status, 'error');
     const exportCode = exportBackend.split('    save_log)')[1].split('    app_catalog)')[0];
     assert.ok(!/^\s*(?:curl|wget|logcat)\b|tricky_store|github\.com/m.test(exportCode));
@@ -319,7 +382,7 @@ try {
     assert.ok(vm.runInContext('sessionLogChars <= 24000 && sessionLogDropped > 0', ctx));
     ctx.window.ksu.exec = (command, options, callback) => queueMicrotask(() => ctx.window[callback](1, '{"status":"error"}', 'storage full'));
     await vm.runInContext('saveLog()', ctx);
-    assert.equal(nodes.get('logResult').textContent, vi['log.error']);
+    assert.equal(nodes.get('logResult').textContent, vi['log.error'] + '\nstorage full');
     assert.equal(nodes.get('saveLog').disabled, false);
     console.log('PASS: Core lifecycle, backend, optional framework UI, bilingual picker name/icon/package, safe text, search/save, bridge/theme');
 } finally {

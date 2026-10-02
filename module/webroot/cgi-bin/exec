@@ -22,12 +22,7 @@ get_pk_state() {
     PK_GMS_CTRL=$(read_powerkeeper_control) || PK_GMS_CTRL=unsupported
 }
 disarm_powerkeeper_gms() {
-    ensure_powerkeeper_backup "$STOCK_CONF" || return 1
-    content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc --method PUT_misc --arg gms_control --extra value:s:false >/dev/null 2>&1 || return 1
-    # Same conservative Play Store policy as the boot service.
-    content update --uri content://com.miui.powerkeeper.configure/userTable --bind bgControl:s:miuiAuto --where "pkgName='com.android.vending' AND userId=0" >/dev/null 2>&1 || return 1
-    iptables -F gms_wall 2>/dev/null || true
-    ip6tables -F gms_wall 2>/dev/null || true
+    disarm_powerkeeper_with_gms_policy "$STOCK_CONF"
 }
 fail() {
     echo '{"status":"error","message":"Action failed; original settings backup retained"}'
@@ -40,12 +35,15 @@ json_string() {
 case "${1:-status}" in
     save_log)
         # User-requested local export only. No network, logcat or credentials.
-        [ "${#2}" -le 98304 ] || fail
+        [ "${#2}" -le 98304 ] || { echo 'WebUI log payload exceeds the export limit' >&2; fail; }
         _downloads=/storage/emulated/0/Download
-        [ -d "$_downloads" ] && [ ! -L "$_downloads" ] || fail
-        # mktemp creates an exclusive file: never overwrite an existing export.
-        _log=$(mktemp "$_downloads/OneOne-FCM-$(date +%Y%m%d-%H%M%S)-XXXXXX.log") || fail
+        [ -d "$_downloads" ] && [ ! -L "$_downloads" ] || { echo 'Download directory unavailable in the root shell' >&2; fail; }
+        # Android Toybox requires trailing Xs, unlike GNU mktemp's suffix support.
+        _reservation=$(mktemp "$_downloads/OneOne-FCM-$(date +%Y%m%d-%H%M%S)-XXXXXX") || fail
+        _log="$_reservation.log"
         if ! (
+            set -C # Refuse existing files/symlinks even if the export name collides.
+            {
             printf 'OneOne FCM diagnostics\nGenerated: '; date -Iseconds
             printf '\nScope: module snapshot + retained WebUI session. No Android-wide logcat.\n'
             printf 'Contains package names/configuration/errors. Review before sharing.\n'
@@ -57,6 +55,8 @@ case "${1:-status}" in
             printf '\n===== Core =====\n'
             printf 'PowerKeeper GMS control: '; read_powerkeeper_control || true
             printf 'Boot preference: '; read_pk_boot_config; printf '%s\n' "$PK_GMS_BOOT"
+            printf 'GMS PowerKeeper row:\n'
+            content query --uri content://com.miui.powerkeeper.configure/userTable --where "pkgName='com.google.android.gms' AND userId=0" 2>&1
             cmd deviceidle whitelist 2>&1
             for _op in RUN_IN_BACKGROUND RUN_ANY_IN_BACKGROUND 10008 WAKE_LOCK; do
                 cmd appops get com.google.android.gms "$_op" 2>&1
@@ -67,9 +67,11 @@ case "${1:-status}" in
                 if [ -f "$_file" ] && [ ! -L "$_file" ]; then cat "$_file"; else printf '(absent)\n'; fi
             done
             printf '\n===== WebUI session =====\n%s\n' "$2"
-        ) > "$_log"; then
-            rm -f "$_log"; fail
+            } > "$_log"
+        ); then
+            rm -f "$_reservation"; fail
         fi
+        rm -f "$_reservation"
         printf '{"status":"ok","path":"%s"}\n' "$(json_string "$_log")"
         ;;
     app_catalog)

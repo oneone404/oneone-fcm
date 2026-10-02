@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.7.2 — GMS PowerKeeper policy and Android Save Log
+
+- When PowerKeeper disarm is enabled, set primary-user GMS bgControl to
+  noRestrict, insert its row if absent, and verify the result. Preserve recorded
+  stock values; disabling disarm/uninstall restores them or removes a new row.
+- Share this policy between the WebUI and bounded boot retries. Leave Play Store
+  on miuiAuto; no sys-whitelist addition, services.jar patch or new background daemon.
+- Fix Android Toybox mktemp compatibility: trailing X template, .log export with
+  noclobber, cleanup of the empty reservation, and visible errors on failure.
+  Include the current GMS PowerKeeper row in local diagnostics.
+- Framework patcher/profile unchanged: valid artifacts remain reusable. PC/CI
+  tests are not physical-device notification-delivery or battery certification.
+
 ## v1.7.1 — manager app picker and local Save Log
 
 - Prefer the manager's listPackages/getPackagesInfo WebUI APIs and ksu://icon

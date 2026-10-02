@@ -55,6 +55,37 @@ ensure_powerkeeper_backup() {
     mv -f "$_pk_tmp" "$_pk_target_conf" 2>/dev/null
 }
 
+set_powerkeeper_gms_unrestricted() (
+    # Caller must have saved the stock provider state before invoking this.
+    _gms_row=$(content query --uri content://com.miui.powerkeeper.configure/userTable \
+      --where "pkgName='com.google.android.gms' AND userId=0" 2>/dev/null) || exit 1
+    case "$_gms_row" in *Error*|*Exception*|*Permission*|*Unknown*) exit 1 ;; esac
+    if printf '%s\n' "$_gms_row" | grep -q 'pkgName=com.google.android.gms'; then
+        content update --uri content://com.miui.powerkeeper.configure/userTable \
+          --bind bgControl:s:noRestrict --where "pkgName='com.google.android.gms' AND userId=0" >/dev/null 2>&1 || exit 1
+    else
+        content insert --uri content://com.miui.powerkeeper.configure/userTable \
+          --bind pkgName:s:com.google.android.gms --bind userId:i:0 --bind bgControl:s:noRestrict >/dev/null 2>&1 || exit 1
+    fi
+    # Some providers return exit 0 even for an ineffective update; read it back.
+    _gms_verify=$(content query --uri content://com.miui.powerkeeper.configure/userTable \
+      --where "pkgName='com.google.android.gms' AND userId=0" 2>/dev/null) || exit 1
+    case "$_gms_verify" in *Error*|*Exception*|*Permission*|*Unknown*) exit 1 ;; esac
+    printf '%s\n' "$_gms_verify" | grep -Eq 'bgControl=noRestrict([,[:space:]]|$)'
+)
+
+disarm_powerkeeper_with_gms_policy() {
+    ensure_powerkeeper_backup "$1" || return 1
+    set_powerkeeper_gms_unrestricted || return 1
+    content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
+      --method PUT_misc --arg gms_control --extra value:s:false >/dev/null 2>&1 || return 1
+    # Keep Play Store's existing policy unchanged in this GMS-only experiment.
+    content update --uri content://com.miui.powerkeeper.configure/userTable \
+      --bind bgControl:s:miuiAuto --where "pkgName='com.android.vending' AND userId=0" >/dev/null 2>&1 || return 1
+    iptables -F gms_wall 2>/dev/null || true
+    ip6tables -F gms_wall 2>/dev/null || true
+}
+
 restore_powerkeeper_state() {
     _pk_conf="$1"
     [ -f "$_pk_conf" ] || return 1

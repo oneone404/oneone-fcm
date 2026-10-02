@@ -119,14 +119,7 @@ apply_pk_boot_disarm() {
         [ "$_delay" -gt 0 ] && sleep "$_delay"
         if command -v content >/dev/null 2>&1; then
             if read_powerkeeper_control >/dev/null 2>&1; then
-                ensure_powerkeeper_backup "$STOCK_CONF" || continue
-                content call --uri content://com.miui.powerkeeper.configure/SimpleSettings/misc \
-                  --method PUT_misc --arg gms_control --extra value:s:false 2>/dev/null || true
-                # Ensure Play Store uses standard miuiAuto to prevent background connection loops on CN network
-                content update --uri content://com.miui.powerkeeper.configure/userTable \
-                  --bind bgControl:s:miuiAuto --where "pkgName='com.android.vending' AND userId=0" 2>/dev/null || true
-                iptables -F gms_wall 2>/dev/null || true
-                ip6tables -F gms_wall 2>/dev/null || true
+                disarm_powerkeeper_with_gms_policy "$STOCK_CONF" || continue
             fi
         fi
     done

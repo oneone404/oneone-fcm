@@ -1,6 +1,6 @@
 # OneOne FCM
 
-v1.7.1 adds manager-native app selection and local Save Log. Its manager API
+v1.7.2 adds GMS PowerKeeper noRestrict and Android-compatible Save Log. Its manager API
 integration is PC-tested, not yet verified on a connected phone.
 
 A ReSukiSU / KernelSU module for Android-based Xiaomi HyperOS
@@ -25,8 +25,10 @@ It requests a Greezer thaw/unmonitor, unfreezes GMS cgroup nodes when present,
 and sends GCM_RECONNECT once to GMS. This is a reconnect request,
 not evidence of an active FCM connection.
 
-Optional PowerKeeper handling disables gms_control, keeps Play Store on
-miuiAuto, and flushes only the IPv4/IPv6 gms_wall chains. It retries during
+Optional PowerKeeper handling records original provider state, sets GMS to
+noRestrict (inserting its primary-user row if missing), verifies that value,
+disables gms_control, keeps Play Store on miuiAuto, and flushes only the
+IPv4/IPv6 gms_wall chains. It retries during
 startup, not indefinitely. The WebUI controls its current state and whether
 to apply it on boot. Turning off boot application prevents future application;
 it does not restore the current state. Turn off the firewall-disarm switch
@@ -76,7 +78,7 @@ disable access available; boot guards cannot guarantee recovery from every failu
 
 ## Installation and upgrade
 
-1. Download [OneOne FCM v1.7.1](https://github.com/oneone404/oneone-fcm/releases/tag/v1.7.1)
+1. Download [OneOne FCM v1.7.2](https://github.com/oneone404/oneone-fcm/releases/tag/v1.7.2)
    or use the manager's online Update action.
 2. Install the ZIP in ReSukiSU / KernelSU.
 3. **Reboot** to activate the updated service and module scripts.

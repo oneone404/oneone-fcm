@@ -1,7 +1,7 @@
 id=oneone_fcm
 name=OneOne FCM
-version=v1.7.1
-versionCode=171
+version=v1.7.2
+versionCode=172
 author=OneOne
 description=GMS/FCM Core with optional selected-app framework push exceptions.
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json
