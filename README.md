@@ -1,8 +1,12 @@
 # OneOne FCM
 
-A settings-only ReSukiSU / KernelSU module for Android-based Xiaomi HyperOS
+A ReSukiSU / KernelSU module for Android-based Xiaomi HyperOS
 phones and tablets, including Xiaomi / Redmi / POCO, China and Global ROMs.
-There is no model, exact firmware or SDK allowlist. Installation detects
+**v1.7.0 includes an experimental Framework engine**: one ZIP
+with a broadly compatible settings Core and an optional, firmware-specific
+Framework engine. PC tests passed, but physical-device boot/delivery testing
+has not been completed. Framework stays off until explicitly prepared/enabled.
+Core has no model, exact firmware or SDK allowlist. Installation detects
 HyperOS and requires Google Play services for the primary Android user (0).
 
 Cross-device support is capability-based, not a promise that every model/OS
@@ -10,7 +14,7 @@ has been tested. Unsupported AppOps and unavailable Greezer/PowerKeeper
 controls are skipped. Future HyperOS behavior can change; this module cannot
 guarantee delivery, and does not install GMS on a ROM missing Google services.
 
-## What v1.6.0 does
+## Core behavior
 
 After boot, it gives Google Play services a user Doze exemption and allows
 RUN_IN_BACKGROUND, RUN_ANY_IN_BACKGROUND, MIUI autostart (10008), and WAKE_LOCK.
@@ -29,19 +33,43 @@ PowerKeeper boot handling defaults to on for China and off for other regions.
 An existing explicit boot preference is retained. If gms_control cannot be
 read, its switches are unavailable and no PowerKeeper changes are attempted.
 
-There is **no JAR patch, framework mount, bytecode compiler, wake filter,
-per-app whitelist, keep-alive watcher, Vector/LSPosed or lockscreen override**.
+Core itself performs no JAR patch or framework mount. v1.7.0 separately adds
+an optional selected-app Framework engine described below. Neither engine
+requires Vector/LSPosed or changes lockscreen/VOIP/notification alert behavior.
 The Greezer thaw lease is 24 hours; OEM settings may be changed again by
 the OS. This is not an always-running guarantee.
 
 FCM requires a working connection to Google. Some apps use their own push
 services. App permissions, channels, autostart and battery restrictions still
-matter. Without the old framework patch, force-stopped apps are not forcibly
-awakened and delivery may differ from patched releases.
+matter. The new patch does not add INCLUDE_STOPPED_PACKAGES flags, and its
+autostart exception excludes stopped applications.
+
+## Optional Framework engine (experimental)
+
+The app picker displays actual installed user-0 app names, icons and packages.
+Selection alone does nothing to framework behavior until a verified patch is
+prepared, enabled and activated by reboot. Exceptions apply only to selected
+targets of authenticated GMS C2DM pushes; unselected/unrelated requests retain
+stock OEM policy. This is not a whitelist for arbitrary background services.
+
+The current experimental profile admits only Pandora OS3.0.319 / Android 16
+with exact stock services.jar and miui-services.jar hashes. Only miui-services.jar
+is modified, at its autostart and Greezer broadcast checks. Other HyperOS builds
+continue using Core, without a framework patch. No all-model patch claim is made.
+
+Preparation requires structural/linkage validation and on-device ART verification;
+missing/failing verification cannot be enabled. Outputs and stock input remain
+in private /data/adb/oneone_fcm state across module/UI updates. A changed runtime,
+profile or patcher invalidates reuse; UI/catalog changes do not. An OTA mismatch
+skips the mount rather than repatching automatically. Never hot-unmount a loaded JAR.
+
+See [architecture and testing](docs/framework-engine.md) before testing. There
+is no physical-device boot/delivery validation yet. Keep recovery-based module
+disable access available; boot guards cannot guarantee recovery from every failure.
 
 ## Installation and upgrade
 
-1. Download [OneOne FCM v1.6.0](https://github.com/oneone404/oneone-fcm/releases/tag/v1.6.0)
+1. Download [OneOne FCM v1.7.0](https://github.com/oneone404/oneone-fcm/releases/tag/v1.7.0)
    or use the manager's online Update action.
 2. Install the ZIP in ReSukiSU / KernelSU.
 3. **Reboot** to activate the updated service and module scripts.
@@ -49,15 +77,27 @@ awakened and delivery may differ from patched releases.
    delivery test. PowerKeeper and theme/language controls are on the same page,
    without bottom navigation. English/Vietnamese and system/light/dark remain.
 
-Upgrades preserve only stock_settings.conf (original GMS/PowerKeeper settings)
-and /data/system/fcm_pk_boot.conf. Obsolete FSI and Android Settings records
-are filtered out. There is no JAR/whitelist backup, migration engine,
-post-fs-data hook or Android cache operation.
+Optional Framework testing on the admitted Pandora OS3.0.319 profile:
+
+1. Verify recovery/Safe Mode module-disable access before enabling Framework.
+2. Open **Choose apps**, select packages using their names/icons, and save.
+3. Choose **Prepare and verify patch**. Do not enable if preparation fails.
+4. Only after **Ready / disabled**, enable Framework and reboot again.
+5. Confirm **Active**, then test actual remote messages with the screen locked.
+
+Changing selected apps does not require repatching or reboot while the verified
+Framework is active. Disabling Framework requires reboot to unload its overlay.
+Other builds remain Core-only. This is an experimental test path, not boot certification.
+
+Upgrades preserve stock_settings.conf (original GMS/PowerKeeper settings),
+the PowerKeeper boot preference, and the new engine's external policy/artifacts.
+Obsolete FSI and Android Settings records are filtered out. The installer does
+not patch or compile JARs; preparation is an explicit WebUI action.
 
 This release accepts fresh stock-framework installs and upgrades from v1.5.0
 or later after reboot has finished the v1.5.0 cleanup. A pre-v1.5 install or
 pending cache-cleanup record is rejected without changing the installed module.
-No direct upgrade from a patched version is provided in v1.6.0.
+No direct upgrade from pre-v1.5 patched versions is provided.
 
 After an OS update, recheck GMS/PowerKeeper capabilities and delivery. This
 module does not replace the kernel or perform firmware-specific repatching.
@@ -74,10 +114,15 @@ rollback of changes made separately by the user or other modules.
 There is no continuous daemon/polling or held wakelock. Keeping GMS less
 restricted can nevertheless increase battery use; no fixed percentage has
 been measured on the phone.
+The optional JAR overlay also has storage/ART compilation costs that have not
+been measured. On uninstall, its policy is removed and private artifacts are
+cleaned at the next boot; live system_server is never hot-unmounted.
 
 ## Development and online releases
 
-Run `node tests/verify.mjs` with Git Bash available for shell fixtures.
+Set JAVA_HOME and ANDROID_HOME (JDK 17+, Android platform/build-tools 36).
+Run `node tools/build-tools.mjs`, then `node tests/verify.mjs`; Git Bash is
+required for Windows shell fixtures. Generated helper JARs are not committed.
 Tests check syntax, UI consistency, essential settings preservation, uninstall
 restoration and rejection of unfinished/unsupported upgrades. They do not
 replace testing on the target phone.

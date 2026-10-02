@@ -6,10 +6,14 @@ MODDIR=${0%/*}
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
   sleep 2
 done
+[ -f "$MODDIR/lib/framework.sh" ] && . "$MODDIR/lib/framework.sh"
+if [ "$(cat "$FW_STATE/boot-pending" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+    rm -f "$FW_STATE/boot-pending"
+fi
 _gms_path=$(pm path --user 0 com.google.android.gms 2>/dev/null)
 printf '%s\n' "$_gms_path" | grep -q '^package:' || exit 0
 
-# No post-OTA re-patching: this version never replaces framework files.
+# No automatic post-OTA patching. Unknown environments keep the stock framework.
 
 # ==============================================================================
 # 1. Preserve the stock state required to restore the GMS exemption cleanly.

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.7.0 — experimental Framework engine
+
+- PC tests passed; physical-device boot/delivery has not been verified.
+  Framework is off by default. Verify recovery/module-disable access before activation.
+- One module/ZIP/WebUI with independent Core and optional Framework engines.
+- Add a searchable app picker with actual PackageManager labels, PNG icons and
+  full package names. English/Vietnamese and system/light/dark remain.
+- Keep primary-user selections in an atomic root-owned/system-readable policy.
+  No root grants, permanent keep-alive, all-app mode or stopped-package flags.
+- Add a source-built narrow miui-services.jar patch: selected GMS push autostart
+  and freezer-thaw exceptions; retain stock policy for every other event.
+- Only the experimental Pandora OS3.0.319 input profile is admitted. Require
+  exact pristine hashes, structural/linkage checks and on-device ART verification.
+- Keep verified artifacts outside the replaceable module directory. UI/catalog
+  updates do not repatch; changed patcher/profile/runtime keys prevent reuse.
+- No automatic post-OTA patching, notification/VOIP tweaks, cache purge or
+  manual AOT-cache publication. Core still supports other HyperOS models.
+- Framework is disabled until explicitly prepared/enabled, and requires reboot.
+  An unconfirmed activation is skipped at the next boot; recovery access is still required.
+- Not yet validated for real-device boot, delivery, OEM cache behavior or battery use.
+
 ## v1.6.0
 
 - Remove the one-time legacy framework/AOT migration engine, manifests and

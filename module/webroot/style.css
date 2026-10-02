@@ -4,6 +4,7 @@
  * ========================================================================== */
 
 :root {
+    color-scheme: light;
     --bg-base: #efedee;
     --bg-card: #fbf9fa;
     --bg-card-elevated: #ffffff;
@@ -42,6 +43,7 @@
 
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
+        color-scheme: dark;
         --bg-base: #191a1c;
         --bg-card: #2b2c2e;
         --bg-card-elevated: #333437;
@@ -73,6 +75,7 @@
 }
 
 :root[data-theme="dark"] {
+    color-scheme: dark;
     --bg-base: #191a1c;
     --bg-card: #2b2c2e;
     --bg-card-elevated: #333437;
@@ -540,3 +543,33 @@ body {
     display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Native-style modal; application labels and packages always wrap in full. */
+.app-picker {
+    margin: auto;
+    width: min(520px, calc(100vw - 24px));
+    max-height: min(760px, calc(100dvh - 32px));
+    box-sizing: border-box;
+    padding: 18px;
+    border: none;
+    border-radius: 28px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    overflow: hidden;
+}
+.app-picker[open] { display: flex; flex-direction: column; gap: 12px; }
+.app-picker::backdrop { background: rgb(0 0 0 / 45%); }
+.picker-header, .picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; }
+.picker-header h2 { font-size: 1rem; margin: 0; font-weight: 600; }
+.picker-search { width: 100%; box-sizing: border-box; border: 1px solid transparent; border-radius: 18px; padding: 12px 14px; background: var(--bg-input); color: var(--text-primary); font: inherit; font-size: .85rem; }
+.picker-search:focus { outline: 2px solid var(--border-control); }
+.picker-system { display: flex; align-items: center; gap: 8px; font-size: .8rem; }
+.picker-list { min-height: 120px; overflow-y: auto; overscroll-behavior: contain; }
+.picker-app { display: flex; align-items: center; gap: 12px; padding: 12px; margin: 6px 0; background: var(--bg-item); border-radius: 18px; cursor: pointer; }
+.picker-app-icon { width: 40px; height: 40px; flex-shrink: 0; border-radius: 10px; object-fit: contain; display: grid; place-items: center; background: var(--bg-chip); font-size: 1rem; }
+.picker-app-info { flex: 1; min-width: 0; }
+.picker-app-name { font-size: .86rem; font-weight: 600; overflow-wrap: anywhere; }
+.picker-app-package { font: .7rem var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; margin-top: 4px; }
+.picker-app input, .picker-system input { accent-color: var(--switch-track-on); width: 18px; height: 18px; flex-shrink: 0; }
+body:has(.app-picker[open]) { overflow: hidden; }
+.btn:disabled { opacity: .45; cursor: default; }

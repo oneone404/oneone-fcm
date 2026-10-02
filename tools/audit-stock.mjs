@@ -1,0 +1,24 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+const root=path.resolve(import.meta.dirname,'..');
+const [services,miui]=process.argv.slice(2);
+const jdk=process.env.JAVA_HOME;
+if(!services||!miui||!jdk) throw Error('Usage: JAVA_HOME set; node tools/audit-stock.mjs <stock services.jar> <stock miui-services.jar>');
+const profile=Object.fromEntries(fs.readFileSync(path.join(root,'module/profiles/pandora-319.conf'),'utf8').split(/\r?\n/).filter(line=>line.includes('=')).map(line=>line.split('=')));
+const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+if(hash(services)!==profile.services_sha256||hash(miui)!==profile.miui_sha256) throw Error('Unrecognized stock input; refusing this experimental profile');
+const build=path.join(root,'dist/tools-build');
+const out=fs.mkdtempSync(path.join(root,'dist/stock-audit-'));
+const cp=[path.join(build,'classes'),...fs.readdirSync(path.join(build,'deps')).filter(name=>name.endsWith('.jar')).map(name=>path.join(build,'deps',name))].join(path.delimiter);
+const run=args=>{
+    const result=spawnSync(path.join(jdk,'bin','java'+(process.platform==='win32'?'.exe':'')),['-Xmx1g','-cp',cp,'oneone.fcm.FrameworkPatcher',...args],{stdio:'inherit'});
+    if(result.status!==0) throw Error('Patcher/audit failed: '+result.status);
+};
+run(['inspect',services]);
+const patched=path.join(out,'miui-services.jar');
+run(['patch',miui,patched,path.join(root,'module/tools/patcher.jar')]);
+run(['validate',miui,patched]);
+fs.writeFileSync(path.join(out,'audit.json'),JSON.stringify({profile:profile.id,services_sha256:hash(services),miui_sha256:hash(miui),output_sha256:hash(patched),art_verified:false,device_boot_tested:false},null,2));
+console.log('Offline audit only, not an Android-ready artifact:',out);

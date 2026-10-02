@@ -20,6 +20,9 @@ if [ -d "$MODULE_DIR" ] && [ ! -f "$MODULE_DIR/remove" ]; then
     exit 0
 fi
 
+# This exact directory belongs to the removed module; no system cache is purged.
+rm -rf /data/adb/oneone_fcm
+
 
 
 GMS_APPOPS="
@@ -61,7 +64,7 @@ for op in $GMS_APPOPS; do
 done
 
 # Expire the module's thaw lease and return GMS to freezer monitoring.
-if [ -n "$GMS_UID" ]; then
+if [ -n "$GMS_UID" ] && [ -n "$GMS_WAS_WHITELISTED" ]; then
     cmd greezer thuid "$GMS_UID" 0 2>/dev/null || true
     cmd greezer monitor "$GMS_UID" 2>/dev/null || true
 fi

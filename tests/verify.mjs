@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
+import './verify-framework.mjs';
+import './verify-policy.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
@@ -15,7 +17,10 @@ function sh(script, expectedStatus = 0) {
     assert.equal(r.status, expectedStatus, r.stderr + '\n' + r.stdout);
     return r.stdout;
 }
-for (const name of ['common.sh', 'customize.sh', 'service.sh', 'uninstall.sh', 'restore-on-boot.sh', 'webroot/cgi-bin/exec']) {
+for (const name of ['common.sh', 'customize.sh', 'service.sh', 'post-fs-data.sh', 'framework-job.sh', 'lib/framework.sh', 'uninstall.sh', 'restore-on-boot.sh', 'webroot/cgi-bin/exec']) {
+    const raw = fs.readFileSync(path.join(root, 'module', name));
+    assert.ok(!raw.includes(13), name + ': Android shell scripts must use LF, not CRLF');
+    assert.ok(!raw.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), name + ': no UTF-8 BOM');
     const result = spawnSync(bash, ['-n'], { input: read('module/' + name), encoding: 'utf8' });
     assert.equal(result.status, 0, name + ': ' + result.stderr);
 }
@@ -28,13 +33,13 @@ assert.deepEqual(Object.keys(en).sort(), Object.keys(vi).sort());
 for (const key of [...html.matchAll(/data-i18n(?:-html|-ph)?="([^"]+)"/g)].map(m => m[1])) assert.ok(key in en, key);
 for (const m of js.matchAll(/getElementById\('([^']+)'\)/g)) assert.ok(html.includes('id="' + m[1] + '"'), m[1]);
 for (const m of html.matchAll(/(?:onclick|onchange)="([a-zA-Z]+)\(/g)) assert.ok(js.includes('function ' + m[1] + '('), m[1]);
-assert.ok(!/repatch_|save_config|fcm_wake|selectedApps|currentMode/.test(js));
+assert.ok(!/repatch_|save_config|fcm_wake|currentMode/.test(js));
 const runtime = (read('module/common.sh') + read('module/customize.sh') + read('module/service.sh'))
     .split('\n').filter(l => !l.trimStart().startsWith('#')).join('\n');
 assert.ok(!/mount -|dex2oat|execute_patcher/.test(runtime));
 assert.ok(!/stage_legacy_cache|cleanup_legacy_cache|\/data\/dalvik-cache/.test(runtime));
-assert.ok(!fs.existsSync(path.join(root, 'module/post-fs-data.sh')));
-assert.ok(!fs.existsSync(path.join(root, 'module/tools/patcher.jar')));
+assert.ok(fs.existsSync(path.join(root, 'module/post-fs-data.sh')));
+for (const native of ['patcher.jar', 'catalog.jar']) assert.ok(fs.statSync(path.join(root, 'module/tools', native)).size > 0, 'Build native tools first');
 const props = Object.fromEntries(read('module/module.prop').trim().split('\n').map(l => l.split('=')));
 assert.ok(html.includes(props.version));
 JSON.parse(read('update.json'));
@@ -62,6 +67,7 @@ try {
         const props = 'getprop() { case "$1" in ro.product.device) echo different-model;; ro.mi.os.version.name) echo ' + quote(hyperVersion) +
             ';; ro.build.version.incremental) echo ' + quote(incremental) + ';; esac; }\n';
         const custom = read('module/customize.sh').replaceAll('/data/adb/modules', shellPath(path.join(fixture, label, 'modules')))
+            .replaceAll('/data/adb/oneone_fcm/', shellPath(path.join(fixture, label, 'state')) + '/')
             .replaceAll('/data/adb/oneone_fcm_restore.conf', shellPath(path.join(fixture, 'absent-restore')));
         sh('MODPATH=' + quote(staged) + '\n' + props +
             'cmd() { :; }; pm() { ' + (hasGms ? 'echo "package:/system/gms.apk";' : 'return 1;') + ' };\n' +
@@ -111,6 +117,7 @@ try {
         }
         if (kind === 'pending') fs.writeFileSync(path.join(installed, 'oneone_fcm/legacy-cache.tsv'), '');
         const custom = read('module/customize.sh').replaceAll('/data/adb/modules', shellPath(installed))
+            .replaceAll('/data/adb/oneone_fcm/', shellPath(path.join(fixture, kind, 'state')) + '/')
             .replaceAll('/data/adb/oneone_fcm_restore.conf', shellPath(path.join(fixture, 'absent-restore')));
         sh('MODPATH=' + quote(staged) + '\n' +
             'getprop() { case "$1" in ro.mi.os.version.name) echo OS3.0;; ro.build.version.incremental) echo OS3.0.319.0.WBLCNXM;; esac; }\n' +
@@ -122,7 +129,7 @@ try {
             continue;
         }
         assert.ok(fs.existsSync(path.join(staged, 'skip_mount')));
-        for (const dead of ['framework', 'system', 'stock', 'cache', 'tools', 'repatch.sh', 'post-fs-data.sh', 'legacy-cache.tsv', 'legacy_wake.conf']) assert.ok(!fs.existsSync(path.join(staged, dead)), dead);
+        for (const dead of ['framework', 'system', 'stock', 'cache', 'repatch.sh', 'legacy-cache.tsv', 'legacy_wake.conf']) assert.ok(!fs.existsSync(path.join(staged, dead)), dead);
         if (kind === 'upgrade') assert.equal(fs.readFileSync(path.join(staged, 'stock_settings.conf'), 'utf8'), backup);
     }
 
@@ -138,12 +145,13 @@ try {
             .replace('/data/adb/oneone_fcm_restore.conf', shellPath(restoreConf))
             .replace('/data/adb/service.d/oneone_fcm_restore.sh', shellPath(restoreJob))
             .replace('/data/adb/modules/oneone_fcm', shellPath(path.join(fixture, 'absent-module')));
+        const restorationScoped = restoration.replaceAll('/data/adb/oneone_fcm', shellPath(path.join(fixture, 'removed-state')));
         sh('getprop() { echo 1; }; pm() { echo "package:com.google.android.gms uid:10001"; }\n' +
             'cmd() { echo "$*" >> ' + quote(restoreLog) + '; ' +
             'if [ "$1" = appops ] && [ "$2" = get ]; then echo "WAKE_LOCK: default"; return 0; fi; ' +
             (failure ? '[ "$1" != appops ];' : 'return 0;') + ' }\n' +
             'content() { echo "content $*" >> ' + quote(restoreLog) + '; return 0; }\n' +
-            restoration, failure ? 1 : 0);
+            restorationScoped, failure ? 1 : 0);
         const log = fs.readFileSync(restoreLog, 'utf8');
         assert.ok(log.includes('deviceidle whitelist +com.google.android.gms'));
         assert.ok(log.includes('appops set com.google.android.gms WAKE_LOCK ignore'));
@@ -170,21 +178,40 @@ try {
     assert.equal(noProvider.gms_parity.boot_apply, false);
 
     // Mock the KernelSU callback bridge and exercise the single-page UI.
-    const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], {
-        textContent: '', className: '', style: {}, disabled: false,
+    const element = tag => ({
+        tagName: tag.toUpperCase(), textContent: '', className: '', style: {}, disabled: false, value: '', checked: false,
+        children: [], handlers: {}, open: false,
+        append(...children) { this.children.push(...children); },
+        replaceChildren(...children) { this.children = children; this.textContent = ''; },
+        addEventListener(name, fn) { this.handlers[name] = fn; },
+        setAttribute(name, value) { this[name] = value; },
+        showModal() { this.open = true; }, close() { this.open = false; },
         classList: { add() {}, remove() {} }
-    }]));
+    });
+    const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], element('div')]));
     const attrs = new Map();
     const ctx = {
         console, URLSearchParams, navigator: { language: 'vi' },
         localStorage: { getItem() { return null; }, setItem() {} },
         setTimeout, clearTimeout, fetch: async url => ({ ok: true, json: async () => url.includes('/vi.') ? vi : en }),
-        document: { getElementById: id => nodes.get(id), querySelectorAll: () => [],
+        document: { getElementById: id => nodes.get(id), querySelectorAll: () => [], createElement: element, createDocumentFragment: () => element('fragment'),
             documentElement: { setAttribute: (k, v) => attrs.set(k, v), removeAttribute: k => attrs.delete(k), classList: { remove() {} } } },
         window: { location: { search: '' }, scrollTo() {} }
     };
+    let savedSelection = '0:com.mbbank';
     ctx.window.ksu = { exec(command, options, callback) {
-        queueMicrotask(() => ctx.window[callback](0, JSON.stringify(status), ''));
+        let response = status;
+        if (command.includes("'framework_status'")) response = { status: 'ok', framework: 'unsupported', enabled: false };
+        if (command.includes("'whitelist_get'")) response = { status: 'ok', packages: savedSelection };
+        if (command.includes("'app_catalog'")) response = { status: 'ok', apps: [
+            { name: 'MB Bank', package: 'com.mbbank', user: 0, icon: 'data:image/png;base64,AAAA', system: false },
+            { name: '<script>not HTML</script> — full long label', package: 'com.example.long', user: 0, icon: 'https://untrusted.invalid/icon', system: false },
+            { name: 'System app', package: 'com.example.system', user: 0, system: true }
+        ] };
+        if (command.includes("'whitelist_save'")) {
+            savedSelection = command.match(/'whitelist_save' '([^']*)'/)[1]; response = { status: 'ok' };
+        }
+        queueMicrotask(() => ctx.window[callback](0, JSON.stringify(response), ''));
     } };
     vm.createContext(ctx);
     vm.runInContext(js, ctx);
@@ -196,7 +223,25 @@ try {
     assert.equal(attrs.get('data-theme'), 'dark');
     vm.runInContext("setTheme('system');", ctx);
     assert.ok(!attrs.has('data-theme'));
-    console.log('PASS: syntax, single-page UI/i18n, fresh/v1.5 upgrade, unsafe-upgrade rejection, settings/uninstall, read-only backend, bridge/theme');
+    await vm.runInContext('openAppPicker()', ctx);
+    assert.equal(nodes.get('appPicker').open, true);
+    assert.equal(nodes.get('saveApps').disabled, false);
+    const rows = nodes.get('appPickerList').children[0].children;
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].children[0].tagName, 'IMG');
+    assert.equal(rows[0].children[1].children[0].textContent, 'MB Bank');
+    assert.equal(rows[0].children[1].children[1].textContent, 'com.mbbank');
+    assert.equal(rows[1].children[0].tagName, 'SPAN');
+    assert.equal(rows[1].children[1].children[0].textContent, '<script>not HTML</script> — full long label');
+    rows[1].children[2].checked = true;
+    rows[1].children[2].handlers.change();
+    await vm.runInContext('saveAppPicker()', ctx);
+    assert.equal(savedSelection, '0:com.example.long,0:com.mbbank');
+    assert.equal(nodes.get('appPicker').open, false);
+    nodes.get('appSearch').value = 'mbbank';
+    vm.runInContext('renderAppPicker()', ctx);
+    assert.equal(nodes.get('appPickerList').children[0].children.length, 1);
+    console.log('PASS: Core lifecycle, backend, optional framework UI, bilingual picker name/icon/package, safe text, search/save, bridge/theme');
 } finally {
     // Only this mkdtemp-owned fixture is removed.
     fs.rmSync(fixture, { recursive: true, force: true });

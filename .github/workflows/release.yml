@@ -19,7 +19,20 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test settings-only module and upgrade migration
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install native-helper build tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Build native catalog and framework patcher
+        run: node tools/build-tools.mjs
+
+      - name: Test Core, framework gates and UI
         run: node tests/verify.mjs
 
       - name: Verify tag and module version
@@ -38,6 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          awk 'BEGIN {section=0} /^## / {if (section) exit; section=1; next} section {print}' CHANGELOG.md > release-notes.md
           gh release create "${GITHUB_REF_NAME}" "OneOne-FCM-${GITHUB_REF_NAME}.zip" \
             --title "OneOne FCM ${GITHUB_REF_NAME}" \
-            --generate-notes
+            --notes-file release-notes.md

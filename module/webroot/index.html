@@ -112,6 +112,29 @@
     </div>
     </div>
 
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title" data-i18n="framework.title">Selected app push</div>
+            <span class="status-pill status-stopped" id="frameworkBadge">—</span>
+        </div>
+        <p class="feature-hint" data-i18n="framework.hint">Optional framework exceptions for GMS push, not permanent app keep-alive. Only verified profiles can be enabled.</p>
+        <div class="feature-row">
+            <div class="feature-info">
+                <div class="feature-name" id="frameworkToggleLabel" data-i18n="framework.enable">Enable framework exceptions</div>
+                <div class="feature-hint" data-i18n="framework.reboot">Changing framework activation requires a reboot.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="frameworkSwitch" aria-labelledby="frameworkToggleLabel" disabled onchange="toggleFramework(this.checked)">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div class="action-row" style="margin-top:12px">
+            <button class="btn" id="chooseApps" onclick="openAppPicker()" data-i18n="apps.choose">Choose apps</button>
+            <button class="btn" id="prepareFramework" disabled onclick="prepareFramework()" data-i18n="framework.prepare">Prepare &amp; verify patch</button>
+        </div>
+        <div class="feature-hint" id="appSelectionSummary" data-i18n="apps.none">No apps selected</div>
+    </div>
+
     <!-- Appearance, language and about -->
     <div id="paneSettings">
         <!-- Appearance & Language Section -->
@@ -170,13 +193,27 @@
                 </div>
                 <div class="settings-row-info">
                     <div class="settings-row-title">OneOne FCM</div>
-                    <div class="settings-row-sub">Version v1.6.0 &bull; Author: OneOne</div>
+                    <div class="settings-row-sub">Version v1.7.0 &bull; Author: OneOne</div>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
+<dialog class="app-picker" id="appPicker" aria-labelledby="appPickerTitle">
+    <div class="picker-header">
+        <h2 id="appPickerTitle" data-i18n="apps.choose">Choose apps</h2>
+        <button class="btn" onclick="closeAppPicker()" data-i18n="apps.cancel">Cancel</button>
+    </div>
+    <p class="feature-hint" data-i18n="apps.hint">Primary user only. Selecting an app does not grant root or keep its process permanently running.</p>
+    <input class="picker-search" id="appSearch" type="search" autocomplete="off" autofocus data-i18n-ph="apps.search" placeholder="Search name or package" oninput="renderAppPicker()">
+    <label class="picker-system"><input type="checkbox" id="showSystemApps" onchange="renderAppPicker()"><span data-i18n="apps.system">Show system apps</span></label>
+    <div class="picker-list" id="appPickerList" aria-live="polite"></div>
+    <div class="picker-footer">
+        <span class="feature-hint" id="appPickerCount"></span>
+        <button class="btn btn-accent" id="saveApps" onclick="saveAppPicker()" data-i18n="apps.save">Save selection</button>
+    </div>
+</dialog>
 
 
 

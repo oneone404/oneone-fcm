@@ -4,6 +4,7 @@ DATA_DIR=/data/system
 PK_BOOT_CONF="$DATA_DIR/fcm_pk_boot.conf"
 MODDIR="${0%/*}/../.."
 . "$MODDIR/common.sh"
+. "$MODDIR/lib/framework.sh"
 STOCK_CONF="$MODDIR/stock_settings.conf"
 
 set_data_permissions() {
@@ -37,6 +38,35 @@ json_string() {
     printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g;s/"/\\"/g'
 }
 case "${1:-status}" in
+    app_catalog)
+        [ -f "$MODDIR/tools/catalog.jar" ] || fail
+        CLASSPATH="$MODDIR/tools/catalog.jar" /system/bin/app_process /system/bin oneone.fcm.AppCatalog list
+        ;;
+    whitelist_get)
+        _list=$(grep -E '^0:[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$' "$FW_POLICY" 2>/dev/null | sort -u)
+        printf '{"status":"ok","packages":"%s"}\n' "$(json_string "$(printf '%s' "$_list" | tr '\n' ',')")"
+        ;;
+    whitelist_save)
+        _list=$(printf '%s' "$2" | tr ',' '\n')
+        fw_write_policy list "$_list" || fail
+        echo '{"status":"ok"}'
+        ;;
+    framework_status)
+        fw_status
+        _enabled=false; fw_requested && _enabled=true
+        printf '{"status":"ok","framework":"%s","enabled":%s}\n' "$FW_STATUS" "$_enabled"
+        ;;
+    framework_enable)
+        fw_write_policy enabled "$2" || fail
+        echo '{"status":"ok","reboot_required":true}'
+        ;;
+    framework_prepare)
+        fw_init && fw_supported || fail
+        [ ! -e "$FW_STATE/prepare.lock" ] || fail
+        # Detached worker owns its own pid/lock, log and atomic artifact transaction.
+        sh "$MODDIR/framework-job.sh" > "$FW_STATE/prepare.log" 2>&1 < /dev/null &
+        echo '{"status":"ok","started":true}'
+        ;;
     status|load_status|get_status)
         read_pk_boot_config; get_pk_state
         _idle=$(cmd deviceidle whitelist 2>/dev/null); _idle_status=$?

@@ -129,6 +129,9 @@
         applyI18n();
         if (currentGmsParity) updateGmsParityUI(currentGmsParity);
         if (currentStatus) renderStatus(currentStatus); else loadStatus();
+        renderAppPicker();
+        updateSelectionSummary();
+        if (frameworkState) renderFrameworkStatus(frameworkState);
     }
 
     async function initI18n() {
@@ -399,7 +402,7 @@
             const timeout = setTimeout(() => {
                 delete window[cbName];
                 resolve({ success: false, stderr: 'Root bridge timed out', data: null });
-            }, 10000);
+            }, action === 'app_catalog' ? 60000 : 10000);
             const jsonPayload = payload ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : '';
             const escapedPayload = jsonPayload.replace(/'/g, "'\\''");
             const cmd = `sh /data/adb/modules/oneone_fcm/webroot/cgi-bin/exec '${action}' '${escapedPayload}' 2>/dev/null`;
@@ -461,7 +464,144 @@
                 document.getElementById(id).disabled = true;
             });
         }
+        await loadFrameworkStatus();
     }
+
+    let appCatalog = [];
+    let appSelection = new Set();
+    let appDraft = new Set();
+    let pickerLoading = false;
+    let pickerSaving = false;
+    let pickerError = false;
+    let pickerAvailable = false;
+    let frameworkState = null;
+    let frameworkBusy = false;
+
+    function updateSelectionSummary() {
+        document.getElementById('appSelectionSummary').textContent = t('apps.selected', { count: appSelection.size });
+    }
+    function closeAppPicker() {
+        if (pickerSaving) return;
+        document.getElementById('appPicker').close();
+    }
+    async function openAppPicker() {
+        const dialog = document.getElementById('appPicker');
+        if (dialog.open || pickerLoading) return;
+        pickerLoading = true; pickerError = false; pickerAvailable = false;
+        appDraft = new Set(appSelection);
+        document.getElementById('appSearch').value = '';
+        dialog.showModal();
+        renderAppPicker();
+        try {
+            const config = await execAction('whitelist_get');
+            if (!config.success) throw Error('Policy unavailable');
+            appSelection = new Set((config.data.packages || '').split(',').filter(Boolean));
+            appDraft = new Set(appSelection);
+            const catalog = await execAction('app_catalog');
+            if (!catalog.success || !Array.isArray(catalog.data.apps)) throw Error('Catalog unavailable');
+            appCatalog = catalog.data.apps.filter(app => app.user === 0 && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(app.package));
+            pickerAvailable = true;
+            updateSelectionSummary();
+        } catch (error) { pickerError = true; }
+        finally { pickerLoading = false; renderAppPicker(); }
+    }
+    function renderAppPicker() {
+        const list = document.getElementById('appPickerList');
+        list.replaceChildren();
+        document.getElementById('saveApps').disabled = pickerLoading || pickerSaving || !pickerAvailable;
+        document.getElementById('appPickerCount').textContent = t('apps.selected', { count: appDraft.size });
+        if (pickerLoading || pickerError) {
+            list.textContent = t(pickerLoading ? 'apps.loading' : 'apps.error');
+            return;
+        }
+        const query = document.getElementById('appSearch').value.trim().toLocaleLowerCase();
+        const showSystem = document.getElementById('showSystemApps').checked;
+        const filtered = appCatalog.filter(app => (!app.system || showSystem || appDraft.has('0:' + app.package))
+            && (app.name + ' ' + app.package).toLocaleLowerCase().includes(query));
+        if (!filtered.length) { list.textContent = t('apps.empty'); return; }
+        const fragment = document.createDocumentFragment();
+        for (const app of filtered) {
+            const key = '0:' + app.package;
+            const row = document.createElement('label'); row.className = 'picker-app';
+            const icon = document.createElement(app.icon && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(app.icon) ? 'img' : 'span');
+            icon.className = 'picker-app-icon';
+            if (icon.tagName === 'IMG') { icon.src = app.icon; icon.alt = ''; icon.loading = 'lazy'; }
+            else { icon.textContent = (app.name || app.package).slice(0, 1).toUpperCase(); icon.setAttribute('aria-hidden', 'true'); }
+            const info = document.createElement('div'); info.className = 'picker-app-info';
+            const name = document.createElement('div'); name.className = 'picker-app-name'; name.textContent = app.name || app.package;
+            const pkg = document.createElement('div'); pkg.className = 'picker-app-package'; pkg.textContent = app.package;
+            info.append(name, pkg);
+            const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = appDraft.has(key); checkbox.disabled = pickerSaving;
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) appDraft.add(key); else appDraft.delete(key);
+                document.getElementById('appPickerCount').textContent = t('apps.selected', { count: appDraft.size });
+            });
+            row.append(icon, info, checkbox); fragment.append(row);
+        }
+        list.append(fragment);
+    }
+    async function saveAppPicker() {
+        if (pickerSaving || pickerLoading || !pickerAvailable) return;
+        pickerSaving = true; renderAppPicker();
+        try {
+            const result = await execAction('whitelist_save', [...appDraft].sort().join(','));
+            if (!result.success) throw Error('Save failed');
+            appSelection = new Set(appDraft); updateSelectionSummary();
+            document.getElementById('appPicker').close();
+            showToast(t('apps.saved'));
+        } catch (error) { showToast(t('apps.save_error')); }
+        finally { pickerSaving = false; renderAppPicker(); }
+    }
+    function renderFrameworkStatus(data) {
+        frameworkState = data;
+        const state = data.framework || 'unknown';
+        const badge = document.getElementById('frameworkBadge');
+        badge.textContent = t('framework.' + state);
+        badge.className = 'status-pill ' + (state === 'active' ? 'status-running' : 'status-stopped');
+        const toggle = document.getElementById('frameworkSwitch');
+        toggle.checked = !!data.enabled;
+        toggle.disabled = frameworkBusy || !['ready', 'reboot_required', 'active', 'disabled_reboot'].includes(state);
+        // Always allow disabling an existing request even after a firmware update.
+        if (data.enabled && !frameworkBusy) toggle.disabled = false;
+        document.getElementById('prepareFramework').disabled = frameworkBusy || ['unknown', 'unsupported', 'active', 'active_stale', 'disabled_reboot', 'preparing'].includes(state);
+    }
+    async function loadFrameworkStatus() {
+        const result = await execAction('framework_status');
+        renderFrameworkStatus(result.success ? result.data : { framework: 'unknown', enabled: false });
+        const policy = await execAction('whitelist_get');
+        if (policy.success) {
+            appSelection = new Set((policy.data.packages || '').split(',').filter(Boolean));
+            updateSelectionSummary();
+        } else document.getElementById('appSelectionSummary').textContent = t('apps.config_unknown');
+    }
+    async function toggleFramework(enabled) {
+        if (frameworkBusy) return;
+        frameworkBusy = true; renderFrameworkStatus(frameworkState || {});
+        try {
+            const result = await execAction('framework_enable', enabled ? '1' : '0');
+            showToast(t(result.success ? 'framework.reboot' : 'apps.save_error'));
+        } finally { frameworkBusy = false; await loadFrameworkStatus(); }
+    }
+    async function prepareFramework() {
+        if (frameworkBusy) return;
+        frameworkBusy = true; renderFrameworkStatus(frameworkState || {});
+        try {
+            const result = await execAction('framework_prepare');
+            showToast(t(result.success ? 'framework.preparing' : 'apps.save_error'));
+            if (result.success) {
+                // Bounded UI-only polling while a requested preparation job runs.
+                for (let retry = 0; retry < 90; retry++) {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await loadFrameworkStatus();
+                    if (frameworkState.framework !== 'preparing' && retry > 0) break;
+                }
+            }
+        } finally { frameworkBusy = false; await loadFrameworkStatus(); }
+    }
+
+    document.getElementById('appPicker').addEventListener('cancel', event => {
+        if (pickerSaving) event.preventDefault();
+    });
 
     function showToast(msg) {
         let shownKsu = false;

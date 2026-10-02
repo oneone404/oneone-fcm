@@ -1,6 +1,7 @@
 #!/system/bin/sh
-# OneOne FCM installer: settings only, no JAR/dex2oat work.
-ui_print "- OneOne FCM v1.6.0 — stock framework"
+# Core updates never run the optional framework patcher.
+ui_print "- OneOne FCM — Core + optional verified Framework"
+[ -s "$MODPATH/tools/patcher.jar" ] && [ -s "$MODPATH/tools/catalog.jar" ] || abort "Missing native helpers; build the release package first."
 . "$MODPATH/common.sh"
 is_hyperos || abort "Android-based Xiaomi HyperOS is required."
 command -v cmd >/dev/null 2>&1 || abort "Install from running Android."
@@ -36,10 +37,13 @@ if [ -f "$MODPATH/stock_settings.conf" ]; then
 fi
 touch "$MODPATH/skip_mount"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-for _script in common.sh service.sh uninstall.sh restore-on-boot.sh webroot/cgi-bin/exec; do
+for _script in common.sh service.sh post-fs-data.sh framework-job.sh lib/framework.sh uninstall.sh restore-on-boot.sh webroot/cgi-bin/exec; do
     set_perm "$MODPATH/$_script" 0 0 0755
 done
 [ -f "$MODPATH/stock_settings.conf" ] && set_perm "$MODPATH/stock_settings.conf" 0 0 0600
+# Reinstallation supersedes a pending uninstall; do not alter whitelist/artifacts.
+rm -f /data/adb/oneone_fcm/remove-requested
 ui_print "- Existing GMS/PowerKeeper backups and boot preference preserved."
-ui_print "- No framework JAR, patcher, AOT archive or mount included."
+ui_print "- Framework artifacts remain in private module state; UI updates do not re-patch."
+ui_print "- Framework is off until prepared, verified and explicitly enabled in WebUI."
 ui_print "- Reboot to activate the updated module scripts."

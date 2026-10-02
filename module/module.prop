@@ -1,7 +1,7 @@
 id=oneone_fcm
 name=OneOne FCM
-version=v1.6.0
-versionCode=160
+version=v1.7.0
+versionCode=170
 author=OneOne
-description=Lightweight GMS/FCM support for Android-based HyperOS.
+description=GMS/FCM Core with optional selected-app framework push exceptions.
 updateJson=https://raw.githubusercontent.com/oneone404/oneone-fcm/main/update.json
