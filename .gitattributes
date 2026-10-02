@@ -1,12 +1,8 @@
-* text=auto
 .gitattributes text eol=lf
 *.sh text eol=lf
+module/module.prop text eol=lf
+module/tools/patcher text eol=lf
 module/webroot/cgi-bin/exec text eol=lf
-*.js text eol=lf
-*.mjs text eol=lf
 *.json text eol=lf
-*.html text eol=lf
-*.css text eol=lf
-*.prop text eol=lf
 *.yml text eol=lf
 *.md text eol=lf

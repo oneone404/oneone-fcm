@@ -6,13 +6,22 @@
      * when the dictionaries cannot be fetched at all.
      * ====================================================================== */
     const LANG_KEY = 'fcm_ui_lang';
-
+    const LANGS_KEY = 'fcm_ui_langs';
     const DEFAULT_LANG = 'en';
     let LANG = DEFAULT_LANG;
-    const LANGS = [
-        { code: 'vi', name: 'Tiếng Việt' },
-        { code: 'en', name: 'English' }
-    ];
+    let LANGS = (function() {
+        try {
+            const cached = restore(LANGS_KEY);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                if (Array.isArray(parsed) && parsed.length) return parsed;
+            }
+        } catch (e) {}
+        return [
+            { code: 'vi', name: 'Tiếng Việt' },
+            { code: 'en', name: 'English' }
+        ];
+    })();
     const DICT = {};
 
     function store(key, value) {
@@ -79,7 +88,7 @@
 
     function detectLang() {
         const saved = restore(LANG_KEY);
-        if (saved && LANGS.some(l => l.code === saved)) return saved;
+        if (saved && (LANGS.some(l => l.code === saved) || restore('fcm_lang_' + saved))) return saved;
         const nav = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
         const exact = LANGS.find(l => nav === l.code.toLowerCase());
         const base = LANGS.find(l => nav.split('-')[0] === l.code.toLowerCase());
@@ -122,20 +131,40 @@
     }
 
     async function setLang(code) {
-        if (!['en', 'vi'].includes(code)) return;
         LANG = code;
         store(LANG_KEY, code);
+        // Instant 0ms apply from memory or localStorage cache if available
+        if (!DICT[code]) {
+            const cached = restore('fcm_lang_' + code);
+            if (cached) {
+                try { DICT[code] = JSON.parse(cached); } catch (e) {}
+            }
+        }
+        if (DICT[code]) {
+            applyI18n();
+            updateModeUI();
+            if (currentGmsParity) updateGmsParityUI(currentGmsParity);
+            if (romState) renderRomStatus();
+            if (installedApps.length) filterApps();
+        }
         await loadDict(code);
         applyI18n();
+        updateModeUI();
         if (currentGmsParity) updateGmsParityUI(currentGmsParity);
-        if (currentStatus) renderStatus(currentStatus); else loadStatus();
-        renderAppPicker();
-        updateSelectionSummary();
-        if (frameworkState) renderFrameworkStatus(frameworkState);
+        if (installedApps.length) filterApps(); else loadStatus();
+        renderRomStatus();
     }
 
     async function initI18n() {
-
+        const fetchIndex = loadJson('lang/index.json').then(list => {
+            if (Array.isArray(list) && list.length) {
+                LANGS = list;
+                store(LANGS_KEY, JSON.stringify(list));
+                renderLangOptions();
+            }
+        }).catch(e => {
+            console.warn('i18n: language index unavailable', e);
+        });
 
         LANG = detectLang();
         renderLangOptions();
@@ -143,7 +172,7 @@
         const dictPromises = [loadDict(DEFAULT_LANG)];
         if (LANG !== DEFAULT_LANG) dictPromises.push(loadDict(LANG));
 
-        await Promise.all(dictPromises);
+        await Promise.all([fetchIndex, ...dictPromises]);
         applyI18n();
     }
 
@@ -180,13 +209,148 @@
         }
     }
 
+    /* =========================================================================
+     * ReSukiSU Bottom Navigation Tabs
+     * ====================================================================== */
+    let currentTab = 'home';
 
+    function switchTab(tabId) {
+        currentTab = tabId;
+        store('fcm_ui_tab', tabId);
 
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(btn => btn.classList.remove('active'));
+        const activeBtn = document.getElementById(
+            tabId === 'home' ? 'navBtnHome' :
+            tabId === 'apps' ? 'navBtnApps' :
+            tabId === 'features' ? 'navBtnFeatures' :
+            tabId === 'settings' ? 'navBtnSettings' : 'navBtnHome'
+        );
+        if (activeBtn) activeBtn.classList.add('active');
 
+        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+        const activePane = document.getElementById(
+            tabId === 'home' ? 'paneHome' :
+            tabId === 'apps' ? 'paneApps' :
+            tabId === 'features' ? 'paneFeatures' :
+            tabId === 'settings' ? 'paneSettings' : 'paneHome'
+        );
+        if (activePane) activePane.classList.add('active');
+
+        window.scrollTo({ top: 0, behavior: 'instant' });
+
+        if (tabId === 'apps') filterApps();
+    }
+
+    function initTab() {
+        const params = new URLSearchParams(window.location.search);
+        const urlTab = params.get('tab');
+        const savedTab = restore('fcm_ui_tab') || 'home';
+        switchTab(urlTab || savedTab);
+    }
+
+    /* =========================================================================
+     * Framework patch state (OTA guard)
+     * ====================================================================== */
+    let romState = null;
+
+    function showRomSkeleton() {
+        if (romState) {
+            const badge = document.getElementById('romBadge');
+            if (badge && romState.state === 'running') {
+                badge.className = 'status-pill status-running';
+                badge.textContent = t('rom.state.checking');
+            }
+            return;
+        }
+        const badge = document.getElementById('romBadge');
+        const cur = document.getElementById('romCurrent');
+        const stored = document.getElementById('romStored');
+        const live = document.getElementById('romLive');
+        const hint = document.getElementById('romHint');
+        if (badge) {
+            badge.className = 'status-pill status-running';
+            badge.innerHTML = '<span class="skeleton skeleton-text" style="width: 55px; height: 11px;"></span>';
+        }
+        if (cur) cur.innerHTML = '<span class="skeleton skeleton-text" style="width: 110px;"></span>';
+        if (stored) stored.innerHTML = '<span class="skeleton skeleton-text" style="width: 130px;"></span>';
+        if (live) live.innerHTML = '<span class="skeleton skeleton-text" style="width: 85px;"></span>';
+        if (hint) hint.innerHTML = '<span class="skeleton skeleton-text" style="width: 65%; height: 11px;"></span>';
+    }
+
+    async function refreshRomStatus() {
+        showRomSkeleton();
+        const res = await execAction('repatch_status');
+        if (res.data && res.data.state) {
+            romState = res.data;
+            saveStateCache({ rom_state: romState });
+        } else {
+            romState = null;
+        }
+        renderRomStatus();
+    }
+
+    function renderRomStatus() {
+        const badge = document.getElementById('romBadge');
+        const hint = document.getElementById('romHint');
+        const btn = document.getElementById('btnRepatch');
+        if (!badge || !hint || !btn) return;
+
+        if (!romState) {
+            badge.textContent = t('rom.state.checking');
+            badge.className = 'status-pill status-stopped';
+            hint.innerHTML = t('rom.hint.unavailable');
+            btn.style.display = 'none';
+            return;
+        }
+
+        document.getElementById('romCurrent').textContent = romState.current || '—';
+        document.getElementById('romStored').textContent = romState.stored || '—';
+        document.getElementById('romLive').textContent =
+            romState.active === 'yes' ? t('rom.live.patched') : t('rom.live.stock');
+
+        const state = romState.state;
+        badge.textContent = t('rom.state.' + state);
+        badge.className = 'status-pill ' + (
+            state === 'ok' ? 'status-running' :
+            state === 'failed' ? 'status-stopped' : 'status-warn'
+        );
+        hint.innerHTML = t('rom.hint.' + state) + (
+            state === 'failed' && romState.last ? '<br><code>' + romState.last + '</code>' : ''
+        );
+
+        if (state === 'reboot') {
+            btn.style.display = '';
+            btn.textContent = t('rom.reboot');
+            btn.onclick = () => execAction('reboot');
+        } else {
+            btn.textContent = t('rom.repatch');
+            btn.onclick = runRepatch;
+            btn.style.display = (state === 'pending' || state === 'failed') ? '' : 'none';
+        }
+    }
+
+    async function runRepatch() {
+        const btn = document.getElementById('btnRepatch');
+        btn.disabled = true;
+        showToast(t('rom.toast.started'));
+        if (romState) { romState.state = 'running'; renderRomStatus(); }
+
+        const res = await execAction('repatch_run');
+        const out = (res.data && res.data.output) || res.stdout || '';
+        if (out.indexOf('RESULT=OK') !== -1) {
+            showToast(t('rom.toast.ok'));
+        } else if (out.indexOf('RESULT=BUSY') !== -1) {
+            showToast(t('rom.toast.busy'));
+        } else {
+            showToast(t('rom.toast.fail'));
+        }
+        btn.disabled = false;
+        refreshRomStatus();
+    }
 
     let currentPkCtrl = 'unknown';
     let currentPkBoot = true;
-
+    let currentV18Active = false;
     let currentGmsParity = null;
 
     function updateGmsParityUI(parity) {
@@ -198,7 +362,7 @@
         const pkCtrl = parity.powerkeeper_gms_control;
         currentPkCtrl = pkCtrl;
         const isPkDisarmed = pkCtrl === 'false';
-        const isPkNA = pkCtrl === 'unsupported';
+        const isPkNA = pkCtrl === 'global_na';
         const isPkUnknown = pkCtrl === 'unknown';
 
         const switchPk = document.getElementById('switchPkGms');
@@ -264,7 +428,7 @@
         if (parityBadge) {
             const allParity = isPkDisarmed || isPkNA;
             parityBadge.className = `status-pill ${allParity ? 'status-running' : 'status-stopped'}`;
-            parityBadge.textContent = isPkNA ? t('parity.not_applicable') : (allParity ? t('parity.badge.active') : t('parity.badge.partial'));
+            parityBadge.textContent = allParity ? t('parity.badge.active') : t('parity.badge.partial');
         }
     }
 
@@ -277,9 +441,9 @@
         const spinPk = document.getElementById('spinPkGms');
         const badgePk = document.getElementById('badgePkGms');
 
-        if (currentPkCtrl === 'unsupported' || currentPkCtrl === 'unknown') {
-            showToast(currentPkCtrl === 'unsupported'
-                ? (t('parity.not_applicable') || 'PowerKeeper control unavailable')
+        if (currentPkCtrl === 'global_na' || currentPkCtrl === 'unknown') {
+            showToast(currentPkCtrl === 'global_na'
+                ? (t('parity.not_applicable') || 'Not applicable on Global ROM')
                 : (t('parity.toast.error') || 'PowerKeeper state is unavailable'));
             if (switchPk) switchPk.checked = false;
             return;
@@ -307,9 +471,10 @@
                     currentPkCtrl = res.data.powerkeeper_gms_control;
                     updateGmsParityUI({
                         powerkeeper_gms_control: currentPkCtrl,
-                        boot_apply: currentPkBoot
+                        boot_apply: currentPkBoot,
+                        v18_active: currentV18Active
                     });
-
+                    saveStateCache();
                     if (currentPkCtrl === 'false') {
                         showToast(t('parity.toast.disarmed') || 'GMS Firewall disarmed ✓');
                     } else {
@@ -339,9 +504,9 @@
         const lblSwitchPkBoot = document.getElementById('lblSwitchPkGmsBoot');
         const spinPkBoot = document.getElementById('spinPkGmsBoot');
 
-        if (currentPkCtrl === 'unsupported' || currentPkCtrl === 'unknown') {
-            showToast(currentPkCtrl === 'unsupported'
-                ? (t('parity.not_applicable') || 'PowerKeeper control unavailable')
+        if (currentPkCtrl === 'global_na' || currentPkCtrl === 'unknown') {
+            showToast(currentPkCtrl === 'global_na'
+                ? (t('parity.not_applicable') || 'Not applicable on Global ROM')
                 : (t('parity.toast.error') || 'PowerKeeper state is unavailable'));
             if (switchPkBoot) switchPkBoot.checked = false;
             return;
@@ -367,9 +532,10 @@
                 }
                 updateGmsParityUI({
                     powerkeeper_gms_control: currentPkCtrl,
-                    boot_apply: currentPkBoot
+                    boot_apply: currentPkBoot,
+                    v18_active: currentV18Active
                 });
-
+                saveStateCache();
                 if (currentPkBoot) {
                     showToast(t('parity.toast.boot_enabled') || 'Apply on boot enabled ✓');
                 } else {
@@ -390,62 +556,20 @@
     }
 
     // KernelSU / APatch / Magisk Execution Bridge
-    // In-memory session only; no background collector, upload or stored token.
-    const sessionLog = [];
-    let sessionLogChars = 0;
-    let sessionLogDropped = 0;
-    function logDiagnostic(event, detail) {
-        let entry = new Date().toISOString() + ' ' + event + '\n' + (typeof detail === 'string' ? detail : JSON.stringify(detail));
-        if (entry.length > 24000) {
-            entry = '[entry truncated to last 24000 characters]\n' + entry.slice(-23950);
-            sessionLogDropped++;
-        }
-        sessionLog.push(entry); sessionLogChars += entry.length;
-        while (sessionLogChars > 24000 && sessionLog.length > 1) {
-            sessionLogChars -= sessionLog.shift().length; sessionLogDropped++;
-        }
-    }
-    let logSaving = false;
-    async function saveLog() {
-        if (logSaving) return;
-        logSaving = true;
-        const button = document.getElementById('saveLog');
-        const result = document.getElementById('logResult');
-        button.disabled = true;
-        result.textContent = t('log.saving');
-        try {
-            const report = 'Retained session (24000 characters max); older/truncated entries: ' + sessionLogDropped + '\n'
-                + sessionLog.join('\n\n');
-            const response = await execAction('save_log', report);
-            result.textContent = response.success && response.data.path
-                ? t('log.saved') + '\n' + response.data.path
-                : t('log.error') + '\n' + (response.stderr || response.data?.message || 'Root bridge returned no diagnostic details');
-        } catch (error) {
-            logDiagnostic('save_log.error', error.message);
-            result.textContent = t('log.error');
-        } finally { logSaving = false; button.disabled = false; }
-    }
     let cbCounter = 0;
     async function execAction(action, payload) {
         const ksuObj = (window.ksu || (typeof ksu !== 'undefined' ? ksu : null));
         if (!ksuObj || typeof ksuObj.exec !== 'function') {
-            logDiagnostic(action, 'KernelSU bridge not available');
             return { success: false, stderr: 'KernelSU bridge not available', data: null };
         }
 
         return new Promise((resolve) => {
             const cbName = 'fcm_cb_' + Date.now() + '_' + (cbCounter++);
-            const timeout = setTimeout(() => {
-                delete window[cbName];
-                logDiagnostic(action, 'Root bridge timed out');
-                resolve({ success: false, stderr: 'Root bridge timed out', data: null });
-            }, ['app_catalog', 'save_log'].includes(action) ? 60000 : 10000);
             const jsonPayload = payload ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : '';
             const escapedPayload = jsonPayload.replace(/'/g, "'\\''");
-            const cmd = `sh /data/adb/modules/oneone_fcm/webroot/cgi-bin/exec '${action}' '${escapedPayload}'`;
+            const cmd = `sh /data/adb/modules/oneone_fcm/webroot/cgi-bin/exec '${action}' '${escapedPayload}' 2>/dev/null`;
 
             window[cbName] = function(errno, stdout, stderr) {
-                clearTimeout(timeout);
                 delete window[cbName];
                 const outStr = (stdout || '').trim();
                 let data = null;
@@ -456,8 +580,6 @@
                         data = JSON.parse(outStr.substring(start, end + 1));
                     }
                 } catch (e) {}
-
-                logDiagnostic(action, { errno, stdout: outStr, stderr: stderr || '' });
 
                 resolve({
                     errno: errno ?? 0,
@@ -471,226 +593,562 @@
             try {
                 ksuObj.exec(cmd, '{}', cbName);
             } catch (e) {
-                clearTimeout(timeout);
                 delete window[cbName];
-                logDiagnostic(action, e.message);
                 resolve({ success: false, stderr: e.message, data: null });
             }
         });
     }
 
-    let currentStatus = null;
-    function renderStatus(data) {
-        document.getElementById('gmsFirmware').textContent = data.firmware || '—';
-        document.getElementById('gmsDoze').textContent = t('gms.' + (data.doze === 'true' ? 'on' : data.doze === 'false' ? 'off' : 'unknown'));
-        const badge = document.getElementById('gmsBadge');
-        // Reports only the exemption, not end-to-end FCM delivery.
-        badge.textContent = t(data.doze === 'true' ? 'gms.on' : 'gms.unknown');
-        badge.className = 'status-pill ' + (data.doze === 'true' ? 'status-running' : 'status-stopped');
-    }
-    async function loadStatus() {
-        const res = await execAction('load_status');
-        if (res.success && res.data) {
-            currentStatus = res.data;
-            renderStatus(currentStatus);
-            updateGmsParityUI(res.data.gms_parity);
+    // Format package name for high readability
+    const pkgFormatCache = new Map();
+    function renderFormattedPkg(pkg) {
+        if (pkgFormatCache.has(pkg)) return pkgFormatCache.get(pkg);
+        const idx = pkg.lastIndexOf('.');
+        let res;
+        if (idx !== -1) {
+            const prefix = pkg.substring(0, idx + 1);
+            const name = pkg.substring(idx + 1);
+            res = `<span class="app-pkg-prefix">${prefix}</span><span class="app-pkg-highlight">${name}</span>`;
         } else {
-            currentStatus = null;
-            const badge = document.getElementById('gmsBadge');
-            badge.textContent = t('gms.unknown');
-            badge.className = 'status-pill status-stopped';
-            updateGmsParityUI({powerkeeper_gms_control: 'unknown', boot_apply: false});
-            ['switchPkGms', 'switchPkGmsBoot'].forEach(id => {
-                document.getElementById(id).disabled = true;
-            });
+            res = `<span class="app-pkg-highlight">${pkg}</span>`;
         }
-        await loadFrameworkStatus();
+        pkgFormatCache.set(pkg, res);
+        return res;
     }
 
-    let appCatalog = [];
-    let appSelection = new Set();
-    let appDraft = new Set();
-    let pickerLoading = false;
-    let pickerSaving = false;
-    let pickerError = false;
-    let pickerAvailable = false;
-    let frameworkState = null;
-    let frameworkBusy = false;
+    let currentMode = null;
+    let savedMode = null;
+    let hasLoadedStoppedStatus = false;
+    let viewFilter = 'ALL'; // 'ALL' | 'ENABLED' | 'DISABLED' | 'ACTIVE' | 'STOPPED'
+    let installedApps = [];
+    let stoppedApps = new Set();
+    let selectedApps = new Set();
+    let savedApps = new Set();
 
-    function updateSelectionSummary() {
-        document.getElementById('appSelectionSummary').textContent = t('apps.selected', { count: appSelection.size });
-    }
-    function closeAppPicker() {
-        if (pickerSaving) return;
-        document.getElementById('appPicker').close();
-    }
-    function readManagerAppCatalog() {
-        const bridge = window.ksu || (typeof ksu !== 'undefined' ? ksu : null);
-        logDiagnostic('manager.capabilities', { listPackages: typeof bridge?.listPackages, getPackagesInfo: typeof bridge?.getPackagesInfo });
-        if (!bridge || typeof bridge.listPackages !== 'function' || typeof bridge.getPackagesInfo !== 'function') return null;
-        const decode = value => typeof value === 'string' ? JSON.parse(value) : value;
-        try {
-            const names = decode(bridge.listPackages('all'));
-            logDiagnostic('manager.listPackages', names);
-            if (!Array.isArray(names)) throw Error('Invalid package list');
-            const packages = [...new Set(names.filter(name => typeof name === 'string'
-                && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(name)))];
-            if (!packages.length) return null; // Manager cache may not be populated yet.
-            const details = decode(bridge.getPackagesInfo(JSON.stringify(packages)));
-            logDiagnostic('manager.getPackagesInfo', details);
-            if (!Array.isArray(details)) throw Error('Invalid package metadata');
-            const byPackage = new Map(details.filter(info => info && typeof info.packageName === 'string')
-                .map(info => [info.packageName, info]));
-            return packages.flatMap(packageName => {
-                const info = byPackage.get(packageName);
-                // Never create primary-user policy rows for an explicitly secondary-user UID.
-                if (info && Number.isInteger(info.uid) && (info.uid < 0 || info.uid >= 100000)) return [];
-                return [{ user: 0, package: packageName,
-                    name: info && !info.error && typeof info.appLabel === 'string' && info.appLabel.trim() ? info.appLabel : packageName,
-                    system: !!(info && !info.error && info.isSystem === true),
-                    icon: 'ksu://icon/' + packageName }];
-            });
-        } catch (error) {
-            logDiagnostic('manager.error', error.stack || error.message);
-            console.warn('App picker: manager API unavailable; using package fallback', error.message);
-            return null;
-        }
-    }
-    async function readAppCatalog() {
-        const nativeApps = readManagerAppCatalog();
-        logDiagnostic('catalog.source', nativeApps && nativeApps.length ? 'manager API: ' + nativeApps.length : 'shell fallback');
-        if (nativeApps && nativeApps.length) return nativeApps;
-        const result = await execAction('app_catalog');
-        if (!result.success || !Array.isArray(result.data.apps)) throw Error('Catalog unavailable');
-        return result.data.apps.filter(app => app.user === 0
-            && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(app.package));
-    }
-    async function openAppPicker() {
-        const dialog = document.getElementById('appPicker');
-        if (dialog.open || pickerLoading) return;
-        pickerLoading = true; pickerError = false; pickerAvailable = false;
-        appDraft = new Set(appSelection);
-        document.getElementById('appSearch').value = '';
-        dialog.showModal();
-        renderAppPicker();
-        try {
-            const config = await execAction('whitelist_get');
-            if (!config.success) throw Error('Policy unavailable');
-            appSelection = new Set((config.data.packages || '').split(',').filter(Boolean));
-            appDraft = new Set(appSelection);
-            appCatalog = await readAppCatalog();
-            pickerAvailable = true;
-            updateSelectionSummary();
-        } catch (error) { pickerError = true; logDiagnostic('picker.error', error.stack || error.message); console.warn('App picker:', error.message); }
-        finally { pickerLoading = false; renderAppPicker(); }
-    }
-    function renderAppPicker() {
-        const list = document.getElementById('appPickerList');
-        list.replaceChildren();
-        document.getElementById('saveApps').disabled = pickerLoading || pickerSaving || !pickerAvailable;
-        document.getElementById('appPickerCount').textContent = t('apps.selected', { count: appDraft.size });
-        if (pickerLoading || pickerError) {
-            list.textContent = t(pickerLoading ? 'apps.loading' : 'apps.error');
-            return;
-        }
-        const query = document.getElementById('appSearch').value.trim().toLocaleLowerCase();
-        const showSystem = document.getElementById('showSystemApps').checked;
-        const filtered = appCatalog.filter(app => (!app.system || showSystem || appDraft.has('0:' + app.package))
-            && (app.name + ' ' + app.package).toLocaleLowerCase().includes(query));
-        if (!filtered.length) { list.textContent = t('apps.empty'); return; }
-        const fragment = document.createDocumentFragment();
-        for (const app of filtered) {
-            const key = '0:' + app.package;
-            const row = document.createElement('label'); row.className = 'picker-app';
-            const validIcon = app.icon && (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(app.icon)
-                || app.icon === 'ksu://icon/' + app.package);
-            const icon = document.createElement(validIcon ? 'img' : 'span');
-            icon.className = 'picker-app-icon';
-            if (icon.tagName === 'IMG') {
-                icon.src = app.icon; icon.alt = ''; icon.loading = 'lazy';
-                icon.addEventListener('error', () => {
-                    const fallback = document.createElement('span'); fallback.className = 'picker-app-icon';
-                    fallback.textContent = (app.name || app.package).slice(0, 1).toUpperCase();
-                    fallback.setAttribute('aria-hidden', 'true');
-                    row.replaceChild(fallback, icon);
-                }, { once: true });
-            }
-            else { icon.textContent = (app.name || app.package).slice(0, 1).toUpperCase(); icon.setAttribute('aria-hidden', 'true'); }
-            const info = document.createElement('div'); info.className = 'picker-app-info';
-            const name = document.createElement('div'); name.className = 'picker-app-name'; name.textContent = app.name || app.package;
-            const pkg = document.createElement('div'); pkg.className = 'picker-app-package'; pkg.textContent = app.package;
-            info.append(name, pkg);
-            const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = appDraft.has(key); checkbox.disabled = pickerSaving;
-            checkbox.addEventListener('change', () => {
-                if (checkbox.checked) appDraft.add(key); else appDraft.delete(key);
-                document.getElementById('appPickerCount').textContent = t('apps.selected', { count: appDraft.size });
-            });
-            row.append(icon, info, checkbox); fragment.append(row);
-        }
-        list.append(fragment);
-    }
-    async function saveAppPicker() {
-        if (pickerSaving || pickerLoading || !pickerAvailable) return;
-        pickerSaving = true; renderAppPicker();
-        try {
-            const result = await execAction('whitelist_save', [...appDraft].sort().join(','));
-            if (!result.success) throw Error('Save failed');
-            appSelection = new Set(appDraft); updateSelectionSummary();
-            document.getElementById('appPicker').close();
-            showToast(t('apps.saved'));
-        } catch (error) { showToast(t('apps.save_error')); }
-        finally { pickerSaving = false; renderAppPicker(); }
-    }
-    function renderFrameworkStatus(data) {
-        frameworkState = data;
-        const state = data.framework || 'unknown';
-        const badge = document.getElementById('frameworkBadge');
-        badge.textContent = t('framework.' + state);
-        badge.className = 'status-pill ' + (state === 'active' ? 'status-running' : 'status-stopped');
-        const toggle = document.getElementById('frameworkSwitch');
-        toggle.checked = !!data.enabled;
-        toggle.disabled = frameworkBusy || !['ready', 'reboot_required', 'active', 'disabled_reboot'].includes(state);
-        // Always allow disabling an existing request even after a firmware update.
-        if (data.enabled && !frameworkBusy) toggle.disabled = false;
-        document.getElementById('prepareFramework').disabled = frameworkBusy || ['unknown', 'unsupported', 'active', 'active_stale', 'disabled_reboot', 'preparing'].includes(state);
-    }
-    async function loadFrameworkStatus() {
-        const result = await execAction('framework_status');
-        renderFrameworkStatus(result.success ? result.data : { framework: 'unknown', enabled: false });
-        const policy = await execAction('whitelist_get');
-        if (policy.success) {
-            appSelection = new Set((policy.data.packages || '').split(',').filter(Boolean));
-            updateSelectionSummary();
-        } else document.getElementById('appSelectionSummary').textContent = t('apps.config_unknown');
-    }
-    async function toggleFramework(enabled) {
-        if (frameworkBusy) return;
-        frameworkBusy = true; renderFrameworkStatus(frameworkState || {});
-        try {
-            const result = await execAction('framework_enable', enabled ? '1' : '0');
-            showToast(t(result.success ? 'framework.reboot' : 'apps.save_error'));
-        } finally { frameworkBusy = false; await loadFrameworkStatus(); }
-    }
-    async function prepareFramework() {
-        if (frameworkBusy) return;
-        frameworkBusy = true; renderFrameworkStatus(frameworkState || {});
-        try {
-            const result = await execAction('framework_prepare');
-            showToast(t(result.success ? 'framework.preparing' : 'apps.save_error'));
-            if (result.success) {
-                // Bounded UI-only polling while a requested preparation job runs.
-                for (let retry = 0; retry < 90; retry++) {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    await loadFrameworkStatus();
-                    if (frameworkState.framework !== 'preparing' && retry > 0) break;
+    function checkDraftChanges() {
+        let isDirty = false;
+        if (currentMode !== savedMode) {
+            isDirty = true;
+        } else if (selectedApps.size !== savedApps.size) {
+            isDirty = true;
+        } else {
+            for (const app of selectedApps) {
+                if (!savedApps.has(app)) {
+                    isDirty = true;
+                    break;
                 }
             }
-        } finally { frameworkBusy = false; await loadFrameworkStatus(); }
+        }
+
+        const saveBar = document.getElementById('saveBar');
+        if (saveBar) {
+            if (isDirty) {
+                saveBar.classList.add('visible');
+            } else {
+                saveBar.classList.remove('visible');
+            }
+        }
+        return isDirty;
     }
 
-    document.getElementById('appPicker').addEventListener('cancel', event => {
-        if (pickerSaving) event.preventDefault();
-    });
+    // Persistent State Cache (Instant 0ms UI Hydration)
+    const CACHE_KEY = 'fcm_ui_cache_v2';
+
+    function saveStateCache(extra) {
+        try {
+            const state = {
+                mode: savedMode,
+                packages: Array.from(savedApps),
+                installed: installedApps,
+                stopped: Array.from(stoppedApps),
+                rom_state: romState,
+                gms_parity: currentGmsParity,
+                ts: Date.now()
+            };
+            if (extra) Object.assign(state, extra);
+            store(CACHE_KEY, JSON.stringify(state));
+        } catch (e) {}
+    }
+
+    function hydrateFromCache() {
+        try {
+            const raw = restore(CACHE_KEY);
+            if (!raw) return;
+            const cache = JSON.parse(raw);
+            if (cache.mode) {
+                savedMode = cache.mode;
+                currentMode = cache.mode;
+            }
+            if (Array.isArray(cache.packages)) {
+                savedApps = new Set(cache.packages);
+                selectedApps = new Set(cache.packages);
+            }
+            if (Array.isArray(cache.installed) && cache.installed.length) {
+                installedApps = cache.installed;
+                isLoadingApps = false;
+            }
+            if (Array.isArray(cache.stopped) && cache.stopped.length) {
+                stoppedApps = new Set(cache.stopped);
+                hasLoadedStoppedStatus = true;
+            }
+            if (cache.rom_state) {
+                romState = cache.rom_state;
+            }
+            if (cache.gms_parity) {
+                currentGmsParity = cache.gms_parity;
+                updateGmsParityUI(cache.gms_parity);
+            }
+
+            updateModeUI();
+            if (romState) renderRomStatus();
+            if (installedApps.length) filterApps();
+            checkDraftChanges();
+        } catch (e) {
+            console.warn('Failed to hydrate state from cache:', e);
+        }
+    }
+
+    // Lazy Rendering & Virtualization State
+    let isLoadingApps = true;
+    let filteredApps = [];
+    let renderedCount = 0;
+    const CHUNK_SIZE = 35;
+    let searchDebounceTimer = null;
+    let sentinelObserver = null;
+
+    function getSkeletonAppListHtml(count = 6) {
+        const widths = [
+            { title: '62%', sub: '42%', badge: '42px' },
+            { title: '78%', sub: '50%', badge: '46px' },
+            { title: '55%', sub: '35%', badge: '40px' },
+            { title: '84%', sub: '48%', badge: '44px' },
+            { title: '68%', sub: '38%', badge: '42px' },
+            { title: '50%', sub: '30%', badge: '40px' }
+        ];
+        let html = '';
+        for (let i = 0; i < count; i++) {
+            const w = widths[i % widths.length];
+            html += `
+                <div class="skeleton-app-item">
+                    <div class="skeleton skeleton-icon"></div>
+                    <div class="skeleton-app-info">
+                        <span class="skeleton skeleton-text" style="width: ${w.title}; height: 13px;"></span>
+                        <span class="skeleton skeleton-text" style="width: ${w.sub}; height: 9px;"></span>
+                    </div>
+                    <div class="skeleton-app-actions">
+                        <span class="skeleton skeleton-pill" style="width: ${w.badge}; height: 16px;"></span>
+                        <span class="skeleton skeleton-switch"></span>
+                    </div>
+                </div>
+            `;
+        }
+        return html;
+    }
+
+    async function loadStatus() {
+        try {
+            const res = await execAction('load_status');
+            if (!res.success || !res.data) {
+                throw new Error(res.stderr || (res.data && res.data.message) || 'Status fetch failed');
+            }
+
+            const data = res.data;
+            savedMode = (data.mode || 'ALL').toUpperCase();
+            currentMode = savedMode;
+            savedApps = new Set(data.packages || []);
+            selectedApps = new Set(savedApps);
+            installedApps = (data.installed || []).sort();
+            isLoadingApps = false;
+
+            updateModeUI();
+            if (data.gms_parity) {
+                updateGmsParityUI(data.gms_parity);
+            }
+            filterApps();
+            checkDraftChanges();
+            saveStateCache();
+
+            // Background fetch for stopped state
+            loadStoppedStatusAsync();
+        } catch (e) {
+            console.error('Failed to load status:', e);
+            isLoadingApps = false;
+            if (!installedApps.length) {
+                document.getElementById('appList').innerHTML = 
+                    `<div style="text-align: center; color: var(--accent-rose); padding: 16px; font-size: 0.75rem;">${t('bridge.fail')}<br><small>${e.message}</small></div>`;
+            }
+        }
+    }
+
+    async function loadStoppedStatusAsync() {
+        try {
+            const res = await execAction('stopped');
+            if (res.success && res.data) {
+                if (Array.isArray(res.data.stopped)) {
+                    stoppedApps = new Set(res.data.stopped);
+                    hasLoadedStoppedStatus = true;
+                }
+                updateCounts();
+                updateStoppedBadgesInDOM();
+                saveStateCache();
+            }
+        } catch (e) {
+            console.warn('Background stopped state fetch skipped:', e);
+            hasLoadedStoppedStatus = true;
+            updateCounts();
+            updateStoppedBadgesInDOM();
+        }
+    }
+
+
+    function updateStoppedBadgesInDOM() {
+        document.querySelectorAll('[data-badge-pkg]').forEach(badge => {
+            const pkg = badge.getAttribute('data-badge-pkg');
+            const isStopped = stoppedApps.has(pkg);
+            badge.className = `status-pill ${isStopped ? 'status-stopped' : 'status-running'}`;
+            badge.textContent = isStopped ? t('pill.stopped') : t('pill.active');
+        });
+    }
+
+    function setMode(mode) {
+        currentMode = mode;
+        updateModeUI();
+        // Update slider colors dynamically
+        document.querySelectorAll('.slider').forEach(slider => {
+            slider.className = 'slider ' + (currentMode === 'BLACKLIST' ? 'rose' : (currentMode === 'WHITELIST' ? 'cyan' : ''));
+        });
+        checkDraftChanges();
+    }
+
+    async function applyLiteDefaults() {
+        if (!confirm(t('lite.confirm'))) return;
+        const button = document.getElementById('btnRestoreLiteDefaults');
+        if (button) button.disabled = true;
+        try {
+            const res = await execAction('apply_lite_defaults');
+            if (!res || !res.success || !res.data || res.data.status !== 'ok') {
+                throw new Error((res && res.data && res.data.message) || (res && res.stderr) || 'Restore failed');
+            }
+            await loadStatus();
+            showToast(t('lite.restored'));
+        } catch (e) {
+            showToast(t('lite.failed') + e.message);
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
+    function setViewFilter(filter) {
+        viewFilter = filter;
+        document.querySelectorAll('.filter-tab').forEach(el => el.classList.remove('active', 'enabled', 'disabled', 'active-app', 'stopped-app'));
+        
+        const tabEl = document.getElementById(
+            filter === 'ALL' ? 'tabFilterAll' :
+            filter === 'ENABLED' ? 'tabFilterEnabled' :
+            filter === 'DISABLED' ? 'tabFilterDisabled' :
+            filter === 'ACTIVE' ? 'tabFilterActive' :
+            filter === 'STOPPED' ? 'tabFilterStopped' : 'tabFilterAll'
+        );
+        if (tabEl) {
+            tabEl.classList.add('active');
+            if (filter === 'ENABLED') tabEl.classList.add('enabled');
+            if (filter === 'DISABLED') tabEl.classList.add('disabled');
+            if (filter === 'ACTIVE') tabEl.classList.add('active-app');
+            if (filter === 'STOPPED') tabEl.classList.add('stopped-app');
+        }
+        filterApps();
+    }
+
+    function updateModeUI() {
+        if (!currentMode) return;
+        const btnAll = document.getElementById('btnModeAll');
+        const btnWhite = document.getElementById('btnModeWhitelist');
+        const btnBlack = document.getElementById('btnModeBlacklist');
+        const badge = document.getElementById('modeBadge');
+        const desc = document.getElementById('modeDescription');
+        const listTitle = document.getElementById('listTitle');
+
+        btnAll.className = 'mode-btn' + (currentMode === 'ALL' ? ' active' : '');
+        btnWhite.className = 'mode-btn' + (currentMode === 'WHITELIST' ? ' active whitelist' : '');
+        btnBlack.className = 'mode-btn' + (currentMode === 'BLACKLIST' ? ' active blacklist' : '');
+
+        if (currentMode === 'ALL') {
+            badge.textContent = t('badge.all');
+            badge.className = 'status-pill status-running';
+            badge.style.background = '';
+            badge.style.color = '';
+            desc.innerHTML = t('mode.desc.all');
+            listTitle.textContent = t('list.title.all');
+        } else if (currentMode === 'WHITELIST') {
+            badge.textContent = t('badge.whitelist');
+            badge.className = 'status-pill';
+            badge.style.background = 'rgba(6, 182, 212, 0.2)';
+            badge.style.color = '#22d3ee';
+            desc.innerHTML = t('mode.desc.whitelist');
+            listTitle.textContent = t('list.title.whitelist');
+        } else if (currentMode === 'BLACKLIST') {
+            badge.textContent = t('badge.blacklist');
+            badge.className = 'status-pill';
+            badge.style.background = 'rgba(244, 63, 94, 0.2)';
+            badge.style.color = '#fb7185';
+            desc.innerHTML = t('mode.desc.blacklist');
+            listTitle.textContent = t('list.title.blacklist');
+        }
+
+        updateCounts();
+    }
+
+    function updateCounts() {
+        const total = installedApps.length;
+        const enabled = selectedApps.size;
+        const disabled = Math.max(0, total - enabled);
+
+        let stoppedCount = 0;
+        let activeCount = 0;
+
+        installedApps.forEach(pkg => {
+            if (stoppedApps.has(pkg)) stoppedCount++;
+            else activeCount++;
+        });
+
+        document.getElementById('countAll').textContent = total;
+        document.getElementById('countEnabled').textContent = enabled;
+        document.getElementById('countDisabled').textContent = disabled;
+        if (hasLoadedStoppedStatus) {
+            document.getElementById('countActive').textContent = activeCount;
+            document.getElementById('countStopped').textContent = stoppedCount;
+        } else {
+            document.getElementById('countActive').innerHTML = '<span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span>';
+            document.getElementById('countStopped').innerHTML = '<span class="skeleton skeleton-text" style="width: 14px; height: 10px;"></span>';
+        }
+        document.getElementById('selectedCount').textContent = t('pill.selected', { n: enabled });
+    }
+
+    function onSearchInput() {
+        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+            filterApps();
+        }, 80);
+    }
+
+    function filterApps() {
+        const search = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+
+        if (isLoadingApps && installedApps.length === 0) {
+            return;
+        }
+
+        if (installedApps.length === 0) {
+            document.getElementById('appList').innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 16px; font-size: 0.75rem;">${t('list.empty')}</div>`;
+            return;
+        }
+
+        filteredApps = installedApps.filter(pkg => {
+            const isChecked = selectedApps.has(pkg);
+            const isStopped = stoppedApps.has(pkg);
+
+            if (viewFilter === 'ENABLED' && !isChecked) return false;
+            if (viewFilter === 'DISABLED' && isChecked) return false;
+            if (viewFilter === 'ACTIVE' && isStopped) return false;
+            if (viewFilter === 'STOPPED' && !isStopped) return false;
+
+            if (search && !pkg.toLowerCase().includes(search)) {
+                return false;
+            }
+            return true;
+        });
+
+        renderedCount = 0;
+        const listEl = document.getElementById('appList');
+        listEl.innerHTML = '';
+
+        if (filteredApps.length === 0) {
+            listEl.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; font-size: 0.75rem;">${t('list.noMatch')}</div>`;
+            updateCounts();
+            return;
+        }
+
+        renderNextChunk();
+        updateCounts();
+    }
+
+    function generateAppItemHtml(pkg, isChecked, isStopped) {
+        const sliderClass = currentMode === 'BLACKLIST' ? 'rose' : (currentMode === 'WHITELIST' ? 'cyan' : '');
+        const badgeHtml = hasLoadedStoppedStatus
+            ? `<span class="status-pill ${isStopped ? 'status-stopped' : 'status-running'}" data-badge-pkg="${pkg}">${isStopped ? t('pill.stopped') : t('pill.active')}</span>`
+            : `<span class="status-pill status-running" data-badge-pkg="${pkg}"><span class="skeleton skeleton-text" style="width: 36px; height: 10px;"></span></span>`;
+
+        return `
+            <div class="app-item ${isChecked ? 'selected' : ''}" data-pkg="${pkg}">
+                <div class="app-pkg-container" onclick="copyPkg(event, '${pkg}')" title="Tap to copy package name">
+                    <span class="app-pkg">${renderFormattedPkg(pkg)}</span>
+                    <span class="copy-icon">
+                        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                    </span>
+                </div>
+                <div class="app-actions">
+                    ${badgeHtml}
+                    <label class="switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleApp('${pkg}', this.checked)">
+                        <span class="slider ${sliderClass}"></span>
+                    </label>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderNextChunk() {
+        const listEl = document.getElementById('appList');
+        if (renderedCount >= filteredApps.length) {
+            removeSentinel();
+            return;
+        }
+
+        const nextBatch = filteredApps.slice(renderedCount, renderedCount + CHUNK_SIZE);
+        renderedCount += nextBatch.length;
+
+        let html = '';
+        nextBatch.forEach(pkg => {
+            html += generateAppItemHtml(pkg, selectedApps.has(pkg), stoppedApps.has(pkg));
+        });
+
+        removeSentinel();
+
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        while (temp.firstChild) {
+            listEl.appendChild(temp.firstChild);
+        }
+
+        if (renderedCount < filteredApps.length) {
+            appendSentinel();
+        }
+    }
+
+    function appendSentinel() {
+        const listEl = document.getElementById('appList');
+        const sentinel = document.createElement('div');
+        sentinel.id = 'scrollSentinel';
+        sentinel.style.padding = '8px';
+        sentinel.style.textAlign = 'center';
+        sentinel.style.color = 'var(--text-muted)';
+        sentinel.style.fontSize = '0.68rem';
+        sentinel.textContent = t('list.more', { a: renderedCount, b: filteredApps.length });
+        listEl.appendChild(sentinel);
+
+        if ('IntersectionObserver' in window) {
+            if (!sentinelObserver) {
+                sentinelObserver = new IntersectionObserver((entries) => {
+                    if (entries[0] && entries[0].isIntersecting) {
+                        renderNextChunk();
+                    }
+                }, { root: listEl, rootMargin: '100px' });
+            }
+            sentinelObserver.observe(sentinel);
+        }
+    }
+
+    function removeSentinel() {
+        const sentinel = document.getElementById('scrollSentinel');
+        if (sentinel) {
+            if (sentinelObserver) sentinelObserver.unobserve(sentinel);
+            sentinel.remove();
+        }
+    }
+
+    function handleListScroll() {
+        const listEl = document.getElementById('appList');
+        if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 80) {
+            if (renderedCount < filteredApps.length) {
+                renderNextChunk();
+            }
+        }
+    }
+
+    function toggleApp(pkg, forceVal) {
+        let val;
+        if (typeof forceVal === 'boolean') {
+            val = forceVal;
+            if (val) selectedApps.add(pkg);
+            else selectedApps.delete(pkg);
+        } else {
+            if (selectedApps.has(pkg)) {
+                selectedApps.delete(pkg);
+                val = false;
+            } else {
+                selectedApps.add(pkg);
+                val = true;
+            }
+        }
+
+        // Fast In-Place DOM Update
+        const el = document.querySelector(`.app-item[data-pkg="${CSS.escape(pkg)}"]`);
+        if (el) {
+            el.classList.toggle('selected', val);
+            const chk = el.querySelector('input[type="checkbox"]');
+            if (chk) chk.checked = val;
+
+            if (viewFilter === 'ENABLED' && !val) el.remove();
+            else if (viewFilter === 'DISABLED' && val) el.remove();
+        }
+
+        updateCounts();
+        checkDraftChanges();
+    }
+
+    function copyPkg(event, pkg) {
+        if (event) event.stopPropagation();
+        copyText(pkg).then(() => {
+            showToast(t('toast.copied', { pkg }));
+        }).catch(() => {
+            showToast(t('toast.pkg', { pkg }));
+        });
+    }
+
+    function copyText(str) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(str);
+        }
+        return new Promise((resolve, reject) => {
+            const el = document.createElement('textarea');
+            el.value = str;
+            el.style.position = 'fixed';
+            el.style.opacity = '0';
+            document.body.appendChild(el);
+            el.select();
+            try {
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                resolve();
+            } catch (err) {
+                document.body.removeChild(el);
+                reject(err);
+            }
+        });
+    }
+
+    async function saveConfiguration() {
+        try {
+            const payload = {
+                mode: currentMode,
+                packages: Array.from(selectedApps)
+            };
+            const res = await execAction('save_config', payload);
+            if (res.success) {
+                savedMode = currentMode;
+                savedApps = new Set(selectedApps);
+                checkDraftChanges();
+                saveStateCache();
+                showToast(t('toast.saved'));
+            } else {
+                alert(t('alert.saveError') + ((res.data && res.data.message) || res.stderr || ''));
+            }
+        } catch (e) {
+            alert(t('alert.saveFail') + e.message);
+        }
+    }
 
     function showToast(msg) {
         let shownKsu = false;
@@ -712,10 +1170,20 @@
         }
     }
 
+    // 1. Instant hydration from localStorage before any async network requests (0ms)
     initTheme();
     initCachedI18n();
+    hydrateFromCache();
+    initTab();
+
+    // 2. Initialize dictionaries and refresh live status asynchronously
     initI18n().finally(() => {
         initTheme();
         applyI18n();
+        initTab();
+        updateModeUI();
+        if (currentGmsParity) updateGmsParityUI(currentGmsParity);
+        if (romState) renderRomStatus();
         loadStatus();
+        refreshRomStatus();
     });

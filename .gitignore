@@ -1,5 +1,4 @@
 dist/
-module/tools/*.jar
 *.bak
 *.tmp
 .DS_Store
