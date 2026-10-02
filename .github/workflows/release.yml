@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,8 +17,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -25,6 +34,9 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - name: Install native-helper build tools
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
@@ -39,19 +51,19 @@ jobs:
         shell: bash
         run: |
           VERSION="$(sed -n 's/^version=//p' module/module.prop)"
-          test "$VERSION" = "${GITHUB_REF_NAME}"
+          test "$VERSION" = "${RELEASE_TAG}"
 
       - name: Build ReSukiSU module ZIP
         shell: bash
         run: |
           cd module
-          zip -r "../OneOne-FCM-${GITHUB_REF_NAME}.zip" . -x '*.DS_Store'
+          zip -r "../OneOne-FCM-${RELEASE_TAG}.zip" . -x '*.DS_Store'
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           awk 'BEGIN {section=0} /^## / {if (section) exit; section=1; next} section {print}' CHANGELOG.md > release-notes.md
-          gh release create "${GITHUB_REF_NAME}" "OneOne-FCM-${GITHUB_REF_NAME}.zip" \
-            --title "OneOne FCM ${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" "OneOne-FCM-${RELEASE_TAG}.zip" \
+            --verify-tag --title "OneOne FCM ${RELEASE_TAG}" \
             --notes-file release-notes.md
