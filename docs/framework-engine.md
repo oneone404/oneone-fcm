@@ -13,7 +13,7 @@ service.sh. Framework preparation and boot mounting are independent of Core.
 | module/lib/framework.sh | Preparation, verification, reuse, status and policy writes |
 | module/post-fs-data.sh | Optional pre-zygote guarded mount; never patch at boot |
 | module/framework-job.sh | One requested preparation job; no persistent worker |
-| module/tools/catalog.jar | Tiny root app_process helper for installed app metadata |
+| module/tools/catalog.jar | Legacy generated helper; no longer invoked by the WebUI |
 | module/tools/patcher.jar | Source-built policy helper plus DEX patcher |
 | module/profiles/pandora-319.conf | Exact experimental input allowlist |
 | /data/adb/oneone_fcm | Root-only generated state, JARs, manifest and preparation log |
@@ -59,8 +59,9 @@ An absent/failed verifier is not a successful preparation.
 
 The key covers profile contents, patch revision, patcher.jar checksum, firmware
 properties, classpath inventory/dependency hashes, APEX inventory and ART binaries.
-The catalog helper is separate, so changing app presentation or WebUI does not
-invalidate a framework artifact. Reinstall/update does not run the patcher.
+The manager app-catalog API and shell inventory are separate from the patcher,
+so changing app presentation or WebUI does not invalidate a framework artifact.
+Reinstall/update does not run the patcher.
 Unchanged artifacts remain outside the root manager's replaceable module tree.
 An existing mount must be disabled and rebooted before taking new pristine input.
 
@@ -96,7 +97,8 @@ Removing the module stages Core settings restoration and state cleanup at reboot
 
 - Confirm current model/build and both pristine JAR hashes via read-only ADB.
 - Confirm classpath format, ART paths and mount visibility at post-fs-data.
-- Load the native catalog; compare displayed names/icons to the launcher/Settings.
+- Check manager listPackages/getPackagesInfo and ksu://icon support; compare
+  names/icons to the launcher/Settings. Test package-only fallback if unavailable.
 - Prepare without enabling: inspect /data/adb/oneone_fcm/prepare.log and ART output.
 - Verify disabling modules from recovery **before** the first framework reboot.
 - Activate once and inspect system_server/ART logs, pending marker and live JAR hash.

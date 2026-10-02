@@ -1,4 +1,10 @@
 {
+  "log.title": "Chẩn đoán",
+  "log.hint": "Lưu log module vào Download. Có tên app, cấu hình và lỗi; xem trước khi chia sẻ. Không tải lên mạng. Lịch sử WebUI giữ 24000 ký tự cuối của phiên hiện tại; log chuẩn bị patch được xuất đầy đủ.",
+  "log.save": "Save Log",
+  "log.saving": "Đang lưu…",
+  "log.saved": "Đã lưu log:",
+  "log.error": "Không lưu được log. Kiểm tra quyền root và bộ nhớ Download rồi thử lại.",
   "apps.choose": "Chọn ứng dụng",
   "apps.cancel": "Hủy",
   "apps.save": "Lưu lựa chọn",

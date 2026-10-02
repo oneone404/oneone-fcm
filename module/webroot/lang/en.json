@@ -1,4 +1,10 @@
 {
+  "log.title": "Diagnostics",
+  "log.hint": "Save module diagnostics to Download. Includes app names, policy and errors; review before sharing. Nothing is uploaded. WebUI history is limited to the current session's last 24000 characters; the patch preparation log is exported in full.",
+  "log.save": "Save Log",
+  "log.saving": "Saving…",
+  "log.saved": "Log saved:",
+  "log.error": "Could not save log. Check root permission and Download storage, then retry.",
   "apps.choose": "Choose apps",
   "apps.cancel": "Cancel",
   "apps.save": "Save selection",

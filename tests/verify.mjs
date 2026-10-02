@@ -177,11 +177,38 @@ try {
     assert.equal(noProvider.gms_parity.powerkeeper_gms_control, 'unsupported');
     assert.equal(noProvider.gms_parity.boot_apply, false);
 
+    // Local export captures full module preparation/policy, never sends a report.
+    const downloads = path.join(fixture, 'Download');
+    fs.mkdirSync(downloads);
+    const logState = path.join(fixture, 'log-state');
+    fs.mkdirSync(logState);
+    put('log-state/prepare.log', 'complete preparation output\nART error: fixture detail\n');
+    put('log-policy.conf', 'enabled=0\n0:com.mbbank\n');
+    const exportBackend = backend.replace('_downloads=/storage/emulated/0/Download', '_downloads=' + quote(downloads))
+        .replace('case "${1:-status}" in', 'case save_log in');
+    const exportMocks = 'FW_STATE=' + quote(logState) + '\nFW_POLICY=' + quote(path.join(fixture, 'log-policy.conf')) + '\n'
+        + 'getprop() { echo fixture; }; content() { echo "Row: 0 name=gms_control, value=false"; };\n'
+        + 'cmd() { echo "diagnostic $*"; };\n';
+    const exportOnce = () => JSON.parse(sh(exportMocks + 'set -- unused ' + quote("WebUI: exact raw error 'quotes'\nTiếng Việt") + '\n' + exportBackend));
+    const exportA = exportOnce(), exportB = exportOnce();
+    assert.equal(exportA.status, 'ok');
+    assert.notEqual(exportA.path, exportB.path, 'Exports must never overwrite');
+    const posixPrefix = shellPath(downloads) + '/';
+    assert.ok(exportA.path.startsWith(posixPrefix));
+    const savedLog = fs.readFileSync(path.join(downloads, path.posix.basename(exportA.path)), 'utf8');
+    assert.ok(savedLog.includes('complete preparation output\nART error: fixture detail'));
+    assert.ok(savedLog.includes('0:com.mbbank'));
+    assert.ok(savedLog.includes("WebUI: exact raw error 'quotes'\nTiếng Việt"));
+    assert.equal(JSON.parse(sh(exportMocks + exportBackend.replace('_downloads=' + quote(downloads), '_downloads=' + quote(path.join(fixture, 'missing-download'))), 1)).status, 'error');
+    const exportCode = exportBackend.split('    save_log)')[1].split('    app_catalog)')[0];
+    assert.ok(!/^\s*(?:curl|wget|logcat)\b|tricky_store|github\.com/m.test(exportCode));
+
     // Mock the KernelSU callback bridge and exercise the single-page UI.
     const element = tag => ({
         tagName: tag.toUpperCase(), textContent: '', className: '', style: {}, disabled: false, value: '', checked: false,
         children: [], handlers: {}, open: false,
         append(...children) { this.children.push(...children); },
+        replaceChild(next, previous) { this.children[this.children.indexOf(previous)] = next; },
         replaceChildren(...children) { this.children = children; this.textContent = ''; },
         addEventListener(name, fn) { this.handlers[name] = fn; },
         setAttribute(name, value) { this[name] = value; },
@@ -211,6 +238,7 @@ try {
         if (command.includes("'whitelist_save'")) {
             savedSelection = command.match(/'whitelist_save' '([^']*)'/)[1]; response = { status: 'ok' };
         }
+        if (command.includes("'save_log'")) response = { status: 'ok', path: '/storage/emulated/0/Download/OneOne-FCM-fixture.log' };
         queueMicrotask(() => ctx.window[callback](0, JSON.stringify(response), ''));
     } };
     vm.createContext(ctx);
@@ -241,6 +269,58 @@ try {
     nodes.get('appSearch').value = 'mbbank';
     vm.runInContext('renderAppPicker()', ctx);
     assert.equal(nodes.get('appPickerList').children[0].children.length, 1);
+    // Real manager bridge shape: JSON strings, primary-user UIDs and ksu:// icons.
+    const fallbackExec = ctx.window.ksu.exec;
+    ctx.window.ksu.exec = (command, options, callback) => {
+        assert.ok(!command.includes("'app_catalog'"), 'Native API must not run the shell catalog');
+        fallbackExec(command, options, callback);
+    };
+    ctx.window.ksu.listPackages = type => {
+        assert.equal(type, 'all');
+        return JSON.stringify(['com.mbbank', 'com.example.work', 'com.example.missing', 'bad;id', 'com.mbbank']);
+    };
+    ctx.window.ksu.getPackagesInfo = request => {
+        assert.deepEqual(JSON.parse(request), ['com.mbbank', 'com.example.work', 'com.example.missing']);
+        return JSON.stringify([
+            {packageName:'com.mbbank',appLabel:'MB Bank — native API',uid:10123,isSystem:false},
+            {packageName:'com.example.work',appLabel:'Work profile',uid:110123,isSystem:false},
+            {packageName:'com.example.missing',error:'Package not found or inaccessible'}
+        ]);
+    };
+    await vm.runInContext('openAppPicker()', ctx);
+    const nativeRows = nodes.get('appPickerList').children[0].children;
+    assert.equal(nativeRows.length, 2);
+    assert.equal(nativeRows[0].children[1].children[0].textContent, 'MB Bank — native API');
+    assert.equal(nativeRows[0].children[0].src, 'ksu://icon/com.mbbank');
+    assert.equal(nativeRows[1].children[1].children[0].textContent, 'com.example.missing');
+    nativeRows[0].children[0].handlers.error();
+    assert.equal(nativeRows[0].children[0].tagName, 'SPAN', 'Icon failure preserves its selectable row');
+    vm.runInContext('closeAppPicker()', ctx);
+    ctx.window.ksu.exec = fallbackExec;
+    for (const unavailable of [() => '[]', () => '{broken', () => { throw Error('API failure'); }]) {
+        ctx.window.ksu.listPackages = unavailable;
+        await vm.runInContext('openAppPicker()', ctx);
+        assert.equal(nodes.get('appPickerList').children[0].children.length, 2, 'Fallback keeps package rows');
+        assert.equal(nodes.get('saveApps').disabled, false);
+        vm.runInContext('closeAppPicker()', ctx);
+    }
+    const shellCatalog = JSON.parse(sh('pm() { case "$*" in "list packages --user 0") printf "package:com.mbbank\\npackage:com.android.settings\\npackage:bad;id\\n";; "list packages --user 0 -s") echo "package:com.android.settings";; *) exit 97;; esac; };\n'
+        + backend.replace('case "${1:-status}" in', 'case app_catalog in')));
+    assert.equal(shellCatalog.apps.length, 2);
+    assert.equal(shellCatalog.apps[0].package, 'com.mbbank');
+    assert.equal(shellCatalog.apps[0].system, false);
+    assert.equal(shellCatalog.apps[1].system, true);
+    assert.ok(!read('module/webroot/cgi-bin/exec').includes('/system/bin/app_process'));
+    await vm.runInContext('saveLog()', ctx);
+    assert.ok(nodes.get('logResult').textContent.includes('/storage/emulated/0/Download/OneOne-FCM-fixture.log'));
+    assert.equal(nodes.get('saveLog').disabled, false);
+    assert.ok(vm.runInContext('sessionLog.join("\\n")', ctx).includes('manager.error'));
+    vm.runInContext('logDiagnostic("large", "x".repeat(40000))', ctx);
+    assert.ok(vm.runInContext('sessionLogChars <= 24000 && sessionLogDropped > 0', ctx));
+    ctx.window.ksu.exec = (command, options, callback) => queueMicrotask(() => ctx.window[callback](1, '{"status":"error"}', 'storage full'));
+    await vm.runInContext('saveLog()', ctx);
+    assert.equal(nodes.get('logResult').textContent, vi['log.error']);
+    assert.equal(nodes.get('saveLog').disabled, false);
     console.log('PASS: Core lifecycle, backend, optional framework UI, bilingual picker name/icon/package, safe text, search/save, bridge/theme');
 } finally {
     // Only this mkdtemp-owned fixture is removed.

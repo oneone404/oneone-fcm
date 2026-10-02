@@ -1,5 +1,8 @@
 # OneOne FCM
 
+v1.7.1 adds manager-native app selection and local Save Log. Its manager API
+integration is PC-tested, not yet verified on a connected phone.
+
 A ReSukiSU / KernelSU module for Android-based Xiaomi HyperOS
 phones and tablets, including Xiaomi / Redmi / POCO, China and Global ROMs.
 **v1.7.0 includes an experimental Framework engine**: one ZIP
@@ -46,7 +49,11 @@ autostart exception excludes stopped applications.
 
 ## Optional Framework engine (experimental)
 
-The app picker displays actual installed user-0 app names, icons and packages.
+The app picker prefers the root manager's listPackages/getPackagesInfo APIs for
+user-0 app names and packages, and ksu://icon for app icons. If those APIs are
+unavailable, malformed or empty, primary-user shell inventory keeps package-only
+rows selectable. Missing names/icons use local fallbacks; the Java catalog helper
+is no longer invoked. Actual installed-manager support remains a device test.
 Selection alone does nothing to framework behavior until a verified patch is
 prepared, enabled and activated by reboot. Exceptions apply only to selected
 targets of authenticated GMS C2DM pushes; unselected/unrelated requests retain
@@ -69,7 +76,7 @@ disable access available; boot guards cannot guarantee recovery from every failu
 
 ## Installation and upgrade
 
-1. Download [OneOne FCM v1.7.0](https://github.com/oneone404/oneone-fcm/releases/tag/v1.7.0)
+1. Download [OneOne FCM v1.7.1](https://github.com/oneone404/oneone-fcm/releases/tag/v1.7.1)
    or use the manager's online Update action.
 2. Install the ZIP in ReSukiSU / KernelSU.
 3. **Reboot** to activate the updated service and module scripts.
@@ -88,6 +95,27 @@ Optional Framework testing on the admitted Pandora OS3.0.319 profile:
 Changing selected apps does not require repatching or reboot while the verified
 Framework is active. Disabling Framework requires reboot to unload its overlay.
 Other builds remain Core-only. This is an experimental test path, not boot certification.
+
+## Local diagnostics
+
+Reproduce the problem (for example open **Choose apps**) and, without closing
+the WebUI, press **Save Log**. It saves a new `OneOne-FCM-*.log` in
+`/storage/emulated/0/Download` (the Android Download folder, not `/downloads`).
+The exact path or a storage/root error is shown below the button.
+
+The file includes module version, model/firmware, current GMS Doze/AppOps and
+PowerKeeper state, Framework status/manifest, full policy and full `prepare.log`
+if present, and raw retained manager/bridge responses and errors. This is module
+diagnostics, not all Android logs or a delivery trace. No keybox, account/token
+files or Android-wide logcat are collected. Package names and error text are
+not redacted: inspect the file before manually sharing it anywhere.
+
+WebUI history is held only in memory for the current open session, limited to
+24000 characters; removed/truncated entries are explicitly counted. Closing
+the WebUI clears that history, but exported files stay in Download until you
+delete them. No extra daemon, polling loop, upload, GitHub token or automatic
+issue submission is used. Save Log does not change notification policy or patch
+any JAR, and a UI-only update reuses valid Framework artifacts.
 
 Upgrades preserve stock_settings.conf (original GMS/PowerKeeper settings),
 the PowerKeeper boot preference, and the new engine's external policy/artifacts.

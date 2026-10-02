@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.7.1 — manager app picker and local Save Log
+
+- Prefer the manager's listPackages/getPackagesInfo WebUI APIs and ksu://icon
+  handler for installed app names and icons. Do not invoke the Java catalog helper.
+- Fall back to primary-user PackageManager shell inventory if native APIs are
+  absent, malformed, empty or fail. Metadata/icon errors retain selectable rows.
+- Exclude explicitly secondary-user UIDs, validate package names and render
+  labels as text. Failed icons use a local placeholder, not an external image.
+- Framework patcher/profile/revision unchanged: no JAR preparation is required
+  solely for this update. Real-device manager API testing is still required.
+- Add Save Log to primary-user Download: module/device/Core/Framework snapshot,
+  full patch preparation log, policy and retained WebUI responses/errors.
+  WebUI history is session-only, bounded to 24000 characters with explicit loss
+  markers. No redaction within retained module logs; review before sharing.
+- No GitHub issue submission, upload button, token, network diagnostics collector
+  or Android-wide logcat. Each export creates a new file without overwriting.
+
 ## v1.7.0 — experimental Framework engine
 
 - PC tests passed; physical-device boot/delivery has not been verified.

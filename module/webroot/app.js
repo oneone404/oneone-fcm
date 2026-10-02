@@ -390,10 +390,45 @@
     }
 
     // KernelSU / APatch / Magisk Execution Bridge
+    // In-memory session only; no background collector, upload or stored token.
+    const sessionLog = [];
+    let sessionLogChars = 0;
+    let sessionLogDropped = 0;
+    function logDiagnostic(event, detail) {
+        let entry = new Date().toISOString() + ' ' + event + '\n' + (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        if (entry.length > 24000) {
+            entry = '[entry truncated to last 24000 characters]\n' + entry.slice(-23950);
+            sessionLogDropped++;
+        }
+        sessionLog.push(entry); sessionLogChars += entry.length;
+        while (sessionLogChars > 24000 && sessionLog.length > 1) {
+            sessionLogChars -= sessionLog.shift().length; sessionLogDropped++;
+        }
+    }
+    let logSaving = false;
+    async function saveLog() {
+        if (logSaving) return;
+        logSaving = true;
+        const button = document.getElementById('saveLog');
+        const result = document.getElementById('logResult');
+        button.disabled = true;
+        result.textContent = t('log.saving');
+        try {
+            const report = 'Retained session (24000 characters max); older/truncated entries: ' + sessionLogDropped + '\n'
+                + sessionLog.join('\n\n');
+            const response = await execAction('save_log', report);
+            result.textContent = response.success && response.data.path
+                ? t('log.saved') + '\n' + response.data.path : t('log.error');
+        } catch (error) {
+            logDiagnostic('save_log.error', error.message);
+            result.textContent = t('log.error');
+        } finally { logSaving = false; button.disabled = false; }
+    }
     let cbCounter = 0;
     async function execAction(action, payload) {
         const ksuObj = (window.ksu || (typeof ksu !== 'undefined' ? ksu : null));
         if (!ksuObj || typeof ksuObj.exec !== 'function') {
+            logDiagnostic(action, 'KernelSU bridge not available');
             return { success: false, stderr: 'KernelSU bridge not available', data: null };
         }
 
@@ -401,11 +436,12 @@
             const cbName = 'fcm_cb_' + Date.now() + '_' + (cbCounter++);
             const timeout = setTimeout(() => {
                 delete window[cbName];
+                logDiagnostic(action, 'Root bridge timed out');
                 resolve({ success: false, stderr: 'Root bridge timed out', data: null });
-            }, action === 'app_catalog' ? 60000 : 10000);
+            }, ['app_catalog', 'save_log'].includes(action) ? 60000 : 10000);
             const jsonPayload = payload ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : '';
             const escapedPayload = jsonPayload.replace(/'/g, "'\\''");
-            const cmd = `sh /data/adb/modules/oneone_fcm/webroot/cgi-bin/exec '${action}' '${escapedPayload}' 2>/dev/null`;
+            const cmd = `sh /data/adb/modules/oneone_fcm/webroot/cgi-bin/exec '${action}' '${escapedPayload}'`;
 
             window[cbName] = function(errno, stdout, stderr) {
                 clearTimeout(timeout);
@@ -419,6 +455,8 @@
                         data = JSON.parse(outStr.substring(start, end + 1));
                     }
                 } catch (e) {}
+
+                logDiagnostic(action, { errno, stdout: outStr, stderr: stderr || '' });
 
                 resolve({
                     errno: errno ?? 0,
@@ -434,6 +472,7 @@
             } catch (e) {
                 clearTimeout(timeout);
                 delete window[cbName];
+                logDiagnostic(action, e.message);
                 resolve({ success: false, stderr: e.message, data: null });
             }
         });
@@ -484,6 +523,47 @@
         if (pickerSaving) return;
         document.getElementById('appPicker').close();
     }
+    function readManagerAppCatalog() {
+        const bridge = window.ksu || (typeof ksu !== 'undefined' ? ksu : null);
+        logDiagnostic('manager.capabilities', { listPackages: typeof bridge?.listPackages, getPackagesInfo: typeof bridge?.getPackagesInfo });
+        if (!bridge || typeof bridge.listPackages !== 'function' || typeof bridge.getPackagesInfo !== 'function') return null;
+        const decode = value => typeof value === 'string' ? JSON.parse(value) : value;
+        try {
+            const names = decode(bridge.listPackages('all'));
+            logDiagnostic('manager.listPackages', names);
+            if (!Array.isArray(names)) throw Error('Invalid package list');
+            const packages = [...new Set(names.filter(name => typeof name === 'string'
+                && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(name)))];
+            if (!packages.length) return null; // Manager cache may not be populated yet.
+            const details = decode(bridge.getPackagesInfo(JSON.stringify(packages)));
+            logDiagnostic('manager.getPackagesInfo', details);
+            if (!Array.isArray(details)) throw Error('Invalid package metadata');
+            const byPackage = new Map(details.filter(info => info && typeof info.packageName === 'string')
+                .map(info => [info.packageName, info]));
+            return packages.flatMap(packageName => {
+                const info = byPackage.get(packageName);
+                // Never create primary-user policy rows for an explicitly secondary-user UID.
+                if (info && Number.isInteger(info.uid) && (info.uid < 0 || info.uid >= 100000)) return [];
+                return [{ user: 0, package: packageName,
+                    name: info && !info.error && typeof info.appLabel === 'string' && info.appLabel.trim() ? info.appLabel : packageName,
+                    system: !!(info && !info.error && info.isSystem === true),
+                    icon: 'ksu://icon/' + packageName }];
+            });
+        } catch (error) {
+            logDiagnostic('manager.error', error.stack || error.message);
+            console.warn('App picker: manager API unavailable; using package fallback', error.message);
+            return null;
+        }
+    }
+    async function readAppCatalog() {
+        const nativeApps = readManagerAppCatalog();
+        logDiagnostic('catalog.source', nativeApps && nativeApps.length ? 'manager API: ' + nativeApps.length : 'shell fallback');
+        if (nativeApps && nativeApps.length) return nativeApps;
+        const result = await execAction('app_catalog');
+        if (!result.success || !Array.isArray(result.data.apps)) throw Error('Catalog unavailable');
+        return result.data.apps.filter(app => app.user === 0
+            && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(app.package));
+    }
     async function openAppPicker() {
         const dialog = document.getElementById('appPicker');
         if (dialog.open || pickerLoading) return;
@@ -497,12 +577,10 @@
             if (!config.success) throw Error('Policy unavailable');
             appSelection = new Set((config.data.packages || '').split(',').filter(Boolean));
             appDraft = new Set(appSelection);
-            const catalog = await execAction('app_catalog');
-            if (!catalog.success || !Array.isArray(catalog.data.apps)) throw Error('Catalog unavailable');
-            appCatalog = catalog.data.apps.filter(app => app.user === 0 && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(app.package));
+            appCatalog = await readAppCatalog();
             pickerAvailable = true;
             updateSelectionSummary();
-        } catch (error) { pickerError = true; }
+        } catch (error) { pickerError = true; logDiagnostic('picker.error', error.stack || error.message); console.warn('App picker:', error.message); }
         finally { pickerLoading = false; renderAppPicker(); }
     }
     function renderAppPicker() {
@@ -523,9 +601,19 @@
         for (const app of filtered) {
             const key = '0:' + app.package;
             const row = document.createElement('label'); row.className = 'picker-app';
-            const icon = document.createElement(app.icon && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(app.icon) ? 'img' : 'span');
+            const validIcon = app.icon && (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(app.icon)
+                || app.icon === 'ksu://icon/' + app.package);
+            const icon = document.createElement(validIcon ? 'img' : 'span');
             icon.className = 'picker-app-icon';
-            if (icon.tagName === 'IMG') { icon.src = app.icon; icon.alt = ''; icon.loading = 'lazy'; }
+            if (icon.tagName === 'IMG') {
+                icon.src = app.icon; icon.alt = ''; icon.loading = 'lazy';
+                icon.addEventListener('error', () => {
+                    const fallback = document.createElement('span'); fallback.className = 'picker-app-icon';
+                    fallback.textContent = (app.name || app.package).slice(0, 1).toUpperCase();
+                    fallback.setAttribute('aria-hidden', 'true');
+                    row.replaceChild(fallback, icon);
+                }, { once: true });
+            }
             else { icon.textContent = (app.name || app.package).slice(0, 1).toUpperCase(); icon.setAttribute('aria-hidden', 'true'); }
             const info = document.createElement('div'); info.className = 'picker-app-info';
             const name = document.createElement('div'); name.className = 'picker-app-name'; name.textContent = app.name || app.package;

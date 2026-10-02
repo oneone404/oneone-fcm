@@ -135,6 +135,13 @@
         <div class="feature-hint" id="appSelectionSummary" data-i18n="apps.none">No apps selected</div>
     </div>
 
+    <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="log.title">Diagnostics</div></div>
+        <p class="feature-hint" data-i18n="log.hint">Save module diagnostics to Download. Includes app names, policy and errors; review before sharing. Nothing is uploaded.</p>
+        <div class="action-row"><button class="btn" id="saveLog" onclick="saveLog()" data-i18n="log.save">Save Log</button></div>
+        <p class="feature-hint log-result" id="logResult" role="status" aria-live="polite"></p>
+    </div>
+
     <!-- Appearance, language and about -->
     <div id="paneSettings">
         <!-- Appearance & Language Section -->
@@ -193,7 +200,7 @@
                 </div>
                 <div class="settings-row-info">
                     <div class="settings-row-title">OneOne FCM</div>
-                    <div class="settings-row-sub">Version v1.7.0 &bull; Author: OneOne</div>
+                    <div class="settings-row-sub">Version v1.7.1 &bull; Author: OneOne</div>
                 </div>
             </div>
         </div>

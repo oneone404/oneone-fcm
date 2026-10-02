@@ -573,3 +573,4 @@ body {
 .picker-app input, .picker-system input { accent-color: var(--switch-track-on); width: 18px; height: 18px; flex-shrink: 0; }
 body:has(.app-picker[open]) { overflow: hidden; }
 .btn:disabled { opacity: .45; cursor: default; }
+.log-result { white-space: pre-wrap; overflow-wrap: anywhere; }

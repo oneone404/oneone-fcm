@@ -18,6 +18,7 @@ window.ksu = { exec(command, options, callback) {
         ]};
     }
     if(command.includes("'whitelist_save'")) data={status:'ok'};
+    if(command.includes("'save_log'")) data={status:'ok',path:'PREVIEW ONLY — no file created /Download/OneOne-FCM-demo.log'};
     queueMicrotask(()=>window[callback](0,JSON.stringify(data),''));
 }};
 document.addEventListener('DOMContentLoaded',()=>{
